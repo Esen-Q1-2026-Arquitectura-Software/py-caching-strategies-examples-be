@@ -1,0 +1,61 @@
+# docker-compose.yml
+# Runs three services:
+#   redis  — Redis 7 (storage for 2.2 demo)
+#   be     — FastAPI backend  (port 8000)
+#   fe     — Flask frontend   (port 5000)
+#
+# Usage:
+#   docker compose up --build
+#   open http://localhost:5000
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: caching-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  be:
+    build:
+      context: ./be
+      dockerfile: Dockerfile
+    container_name: caching-be
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fe:
+    build:
+      context: ./fe
+      dockerfile: Dockerfile
+    container_name: caching-fe
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - BACKEND_URL=http://be:8000
+    depends_on:
+      be:
+        condition: service_healthy
+
+volumes:
+  redis_data:

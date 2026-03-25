@@ -3,39 +3,721 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Caching Showcase</title>
+  <title>Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 60px auto; padding: 0 1rem; background: #f8fafc; color: #1e293b; }
-    h1   { font-size: 2rem; margin-bottom: .25rem; }
-    p    { color: #475569; margin-top: 0; }
-    button { padding: .5rem 1.2rem; background: #3b82f6; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
-    button:hover { background: #2563eb; }
-    pre  { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 8px; overflow-x: auto; margin-top: 1rem; }
-    .badge { display:inline-block; padding:.2rem .6rem; border-radius:999px; font-size:.75rem; font-weight:600; }
-    .ok  { background:#dcfce7; color:#166534; }
-    .err { background:#fee2e2; color:#991b1b; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
   </style>
 </head>
-<body>
-  <h1>Hello World &mdash; Caching Showcase</h1>
-  <p>Frontend: <strong>Flask 3</strong>&nbsp;&nbsp;|&nbsp;&nbsp;Backend: <strong>FastAPI</strong></p>
-  <p>Backend URL: <code>{{ backend_url }}</code></p>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-mono">
 
-  <button onclick="callBackend()">Ping FastAPI backend</button>
-  <pre id="output">Click the button to call the FastAPI /  endpoint via httpx ...</pre>
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 px-6 py-5">
+    <div class="max-w-6xl mx-auto flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-bold text-white tracking-tight">Python Caching Showcase</h1>
+        <p class="text-slate-400 text-sm mt-1">FastAPI backend &bull; Flask frontend &bull; Redis</p>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1 rounded-full bg-slate-800 text-slate-400">checking...</div>
+    </div>
+  </header>
 
+  <main class="max-w-6xl mx-auto px-6 py-8 space-y-10">
+
+    <!-- ── Intro ──────────────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-6">
+      <h2 class="text-lg font-semibold text-slate-200 mb-3">How this demo works</h2>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-slate-400">
+        <div class="bg-slate-800 rounded-lg p-4">
+          <div class="text-violet-400 font-semibold mb-1">Cache MISS</div>
+          Simulates a slow database read (120&ndash;200&nbsp;ms). The result is then stored in the cache.
+          Next call will instantly be a HIT.
+        </div>
+        <div class="bg-slate-800 rounded-lg p-4">
+          <div class="text-emerald-400 font-semibold mb-1">Cache HIT</div>
+          Data returned directly from in-process RAM or Redis in &lt;&nbsp;2&nbsp;ms.
+          The database is never touched.
+        </div>
+        <div class="bg-slate-800 rounded-lg p-4">
+          <div class="text-amber-400 font-semibold mb-1">Clear Cache</div>
+          Evicts all entries. The subsequent fetch will be a MISS again &mdash;
+          so you can observe the full cycle.
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  PART 2.1 — IN-MEMORY CACHING                                       -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2 class="text-xl font-bold text-slate-100 mb-1">
+        <span class="text-violet-400">2.1</span> &mdash; In-Memory Caching
+      </h2>
+      <p class="text-slate-500 text-sm mb-6">
+        Data cached directly in Python process RAM. Nanosecond access, zero network overhead.
+        Lost on restart. Not shared across multiple workers.
+      </p>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- ── lru_cache card ──────────────────────────────────────────── -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="bg-violet-950 border-b border-violet-900 px-5 py-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="text-violet-300 font-bold text-base">functools.lru_cache</span>
+                <span class="ml-2 text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">No TTL</span>
+              </div>
+              <span class="text-xs text-slate-500">maxsize=128</span>
+            </div>
+            <p class="text-slate-400 text-xs mt-1">
+              Caches country config forever (until eviction). No expiry &mdash; right for static reference data.
+            </p>
+          </div>
+
+          <div class="p-5 space-y-4">
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">Country</label>
+              <select id="lru-country" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-600">
+                <option value="US">US &mdash; United States</option>
+                <option value="DE">DE &mdash; Germany</option>
+                <option value="JP">JP &mdash; Japan</option>
+                <option value="BR">BR &mdash; Brazil</option>
+                <option value="IN">IN &mdash; India</option>
+                <option value="GB">GB &mdash; United Kingdom</option>
+              </select>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="fetchLru()" class="flex-1 bg-violet-700 hover:bg-violet-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                Fetch Country Config
+              </button>
+              <button onclick="statsLru()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                Stats
+              </button>
+              <button onclick="clearLru()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                Clear
+              </button>
+            </div>
+            <div id="lru-result" class="hidden fade-in"></div>
+          </div>
+        </div>
+
+        <!-- ── TTLCache card ───────────────────────────────────────────── -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="bg-amber-950 border-b border-amber-900 px-5 py-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="text-amber-300 font-bold text-base">cachetools.TTLCache</span>
+                <span class="ml-2 text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">TTL: 30s</span>
+              </div>
+              <span class="text-xs text-slate-500">maxsize=100</span>
+            </div>
+            <p class="text-slate-400 text-xs mt-1">
+              Caches user permissions for 30&nbsp;s, then auto-expires. Thread-safe via <code>threading.Lock()</code>.
+            </p>
+          </div>
+
+          <div class="p-5 space-y-4">
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">User ID</label>
+              <select id="ttl-user" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-amber-600">
+                <option value="1">1 &mdash; admin</option>
+                <option value="2">2 &mdash; editor</option>
+                <option value="3">3 &mdash; viewer</option>
+                <option value="4">4 &mdash; publisher</option>
+                <option value="5">5 &mdash; commenter</option>
+              </select>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="fetchTtl()" class="flex-1 bg-amber-700 hover:bg-amber-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                Fetch Permissions
+              </button>
+              <button onclick="statsTtl()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                Stats
+              </button>
+              <button onclick="clearTtl()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                Clear
+              </button>
+            </div>
+            <div id="ttl-result" class="hidden fade-in"></div>
+          </div>
+        </div>
+
+      </div><!-- end grid -->
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  PART 2.2 — REDIS                                                   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2 class="text-xl font-bold text-slate-100 mb-1">
+        <span class="text-emerald-400">2.2</span> &mdash; Redis &mdash; The Core Backend Cache
+      </h2>
+      <p class="text-slate-500 text-sm mb-6">
+        Distributed cache. Survives server restarts and is shared across all FastAPI workers / instances.
+        Uses <code class="text-emerald-300">SETEX</code> for atomic set+TTL and <code class="text-emerald-300">GET</code> for retrieval.
+        Connection pool initialized in <code>lifespan()</code>.
+      </p>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div class="bg-emerald-950 border-b border-emerald-900 px-5 py-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="text-emerald-300 font-bold text-base">Redis SETEX / GET (cache-aside)</span>
+              <span class="ml-2 text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">TTL: 300s</span>
+            </div>
+            <span class="text-xs text-slate-500">max_connections=20</span>
+          </div>
+          <p class="text-slate-400 text-xs mt-1">
+            Cache key <code class="text-slate-300">product:{id}</code>. Pattern: check Redis &rarr; miss &rarr; DB &rarr; SETEX &rarr; return.
+          </p>
+        </div>
+
+        <div class="p-5 space-y-4">
+          <!-- Pattern diagram -->
+          <div class="bg-slate-800 rounded-lg p-4 text-xs font-mono text-slate-400 leading-relaxed">
+            <span class="text-emerald-400">GET</span> product:{id}
+            <span class="mx-2 text-slate-600">→</span>
+            <span class="text-emerald-300">HIT</span>: return JSON <span class="text-slate-500">~1ms</span>
+            <br/>
+            <span class="ml-12 text-slate-600">→</span>
+            <span class="text-red-400">MISS</span>: DB fetch <span class="text-slate-500">~200ms</span>
+            <span class="mx-2 text-slate-600">→</span>
+            <span class="text-emerald-400">SETEX</span> product:{id} 300 &lt;json&gt;
+            <span class="mx-2 text-slate-600">→</span> return
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="space-y-4">
+              <div class="flex items-center gap-3">
+                <label class="text-slate-400 text-sm w-20">Product</label>
+                <select id="redis-product" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-emerald-600">
+                  <option value="1">1 &mdash; Laptop Pro 15</option>
+                  <option value="2">2 &mdash; Wireless Mouse</option>
+                  <option value="3">3 &mdash; Standing Desk</option>
+                  <option value="4">4 &mdash; Coffee Maker</option>
+                  <option value="5">5 &mdash; Notebook Pack</option>
+                </select>
+              </div>
+              <div class="flex gap-2">
+                <button onclick="fetchRedis()" class="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                  Fetch Product
+                </button>
+                <button onclick="statsRedis()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                  Stats
+                </button>
+                <button onclick="clearRedis()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-4 text-xs text-slate-400 space-y-1">
+              <div class="text-slate-300 font-semibold mb-2">Why Redis over in-memory?</div>
+              <div class="flex gap-2"><span class="text-emerald-400">+</span> Shared across all workers / pods</div>
+              <div class="flex gap-2"><span class="text-emerald-400">+</span> Survives app restart</div>
+              <div class="flex gap-2"><span class="text-emerald-400">+</span> Atomic TTL via SETEX</div>
+              <div class="flex gap-2"><span class="text-emerald-400">+</span> Rich data types (strings, hashes, sets)</div>
+              <div class="flex gap-2"><span class="text-amber-400">-</span> Network round-trip (~0.5&ndash;2ms)</div>
+              <div class="flex gap-2"><span class="text-amber-400">-</span> External dependency</div>
+            </div>
+          </div>
+          <div id="redis-result" class="hidden fade-in"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  PART 2.3 — CACHE-ASIDE (LAZY LOADING)                                -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2 class="text-xl font-bold text-slate-100 mb-1">
+        <span class="text-sky-400">2.3</span> &mdash; Cache-Aside (Lazy Loading) Pattern
+      </h2>
+      <p class="text-slate-500 text-sm mb-6">
+        Uses a real <strong class="text-slate-300">SQLAlchemy ORM</strong> query on a cache miss &mdash; not a fake in-memory dict.
+        Adds <strong class="text-slate-300">negative caching</strong>: when an ID does not exist the
+        null result is stored with a short 15&nbsp;s TTL so repeated 404 lookups never reach the database.
+      </p>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div class="bg-sky-950 border-b border-sky-900 px-5 py-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="text-sky-300 font-bold text-base">Redis + SQLAlchemy (Cache-Aside)</span>
+              <span class="ml-2 text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">positive TTL: 120s &mdash; negative TTL: 15s</span>
+            </div>
+            <span class="text-xs text-slate-500">orders table &rarr; SQLite</span>
+          </div>
+          <p class="text-slate-400 text-xs mt-1">
+            Cache key <code class="text-slate-300">order:{id}</code>. On miss: real SELECT via SQLAlchemy ORM.
+            Null results also cached (15&nbsp;s) to prevent DB hammering on repeated 404s.
+          </p>
+        </div>
+
+        <div class="p-5 space-y-4">
+          <!-- Pattern diagram -->
+          <div class="bg-slate-800 rounded-lg p-4 text-xs font-mono text-slate-400 leading-relaxed">
+            <span class="text-sky-400">GET</span> order:{id}
+            <br/>
+            <span class="ml-4 text-slate-600">&rarr;</span>
+            <span class="text-emerald-300">HIT (positive)</span>: return cached order
+            <span class="text-slate-500">&nbsp;&nbsp;~1ms &mdash; DB not touched</span>
+            <br/>
+            <span class="ml-4 text-slate-600">&rarr;</span>
+            <span class="text-amber-300">HIT (negative)</span>: return 404 from nil sentinel
+            <span class="text-slate-500">&nbsp;&nbsp;~1ms &mdash; DB NOT touched</span>
+            <br/>
+            <span class="ml-4 text-slate-600">&rarr;</span>
+            <span class="text-red-400">MISS</span>: SQLAlchemy SELECT
+            <span class="text-slate-500">&nbsp;&nbsp;~180ms</span>
+            <span class="mx-2 text-slate-600">&rarr;</span>
+            found
+            <span class="mx-1 text-slate-600">&rarr;</span>
+            <span class="text-sky-400">SETEX</span> order:{id} 120 &lt;json&gt;
+            <span class="text-slate-500">&nbsp;&nbsp;/&nbsp;&nbsp;</span>
+            not found
+            <span class="mx-1 text-slate-600">&rarr;</span>
+            <span class="text-sky-400">SETEX</span> order:{id} 15 &quot;null&quot;
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="space-y-4">
+              <div class="flex items-center gap-3">
+                <label class="text-slate-400 text-sm w-20">Order ID</label>
+                <select id="ca-order" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-sky-600">
+                  <option value="1">1 &mdash; Alice Johnson (delivered)</option>
+                  <option value="2">2 &mdash; Bob Smith (processing)</option>
+                  <option value="3">3 &mdash; Carol White (pending)</option>
+                  <option value="4">4 &mdash; David Lee (shipped)</option>
+                  <option value="5">5 &mdash; Eve Martinez (delivered)</option>
+                  <option value="99">99 &mdash; Non-existent &rarr; negative cache demo</option>
+                </select>
+              </div>
+              <div class="flex gap-2">
+                <button onclick="fetchCacheAside()" class="flex-1 bg-sky-700 hover:bg-sky-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                  Fetch Order
+                </button>
+                <button onclick="statsCacheAside()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                  Stats
+                </button>
+                <button onclick="clearCacheAside()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-4 text-xs text-slate-400 space-y-1">
+              <div class="text-slate-300 font-semibold mb-2">Key upgrades vs 2.2 Redis</div>
+              <div class="flex gap-2"><span class="text-sky-400">+</span> Real SQLAlchemy ORM query on miss (not fake dict)</div>
+              <div class="flex gap-2"><span class="text-sky-400">+</span> Negative caching &mdash; null cached 15s</div>
+              <div class="flex gap-2"><span class="text-sky-400">+</span> Lazy population &mdash; only accessed IDs are cached</div>
+              <div class="flex gap-2"><span class="text-sky-400">+</span> Two separate TTLs: 120s positive, 15s negative</div>
+              <div class="flex gap-2"><span class="text-amber-400">!</span> Try ID 99 twice &mdash; second call skips DB entirely</div>
+            </div>
+          </div>
+          <div id="ca-result" class="hidden fade-in"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  PART 2.4 — WRITE-THROUGH                                            -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <section>
+      <h2 class="text-xl font-bold text-slate-100 mb-1">
+        <span class="text-indigo-400">2.4</span> &mdash; Write-Through Pattern
+      </h2>
+      <p class="text-slate-500 text-sm mb-6">
+        Every <strong class="text-slate-300">PUT</strong> writes to <strong class="text-slate-300">SQLite DB and Redis simultaneously</strong> before responding.
+        The cache is always consistent with the database &mdash; no stale reads possible after any write.
+        Contrast with Cache-Aside: a bare DB write there would leave stale data in Redis until TTL expires.
+      </p>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden mb-4">
+        <div class="bg-indigo-950 border-b border-indigo-900 px-5 py-4">
+          <span class="text-indigo-300 font-bold text-base">Write-Through — Pattern Diagram</span>
+          <p class="text-slate-400 text-xs mt-1">DB write and cache write happen in the same request before the response is sent.</p>
+        </div>
+        <div class="p-5">
+          <div class="bg-slate-800 rounded-lg p-4 text-xs font-mono text-slate-400 leading-relaxed">
+            <span class="text-indigo-400">PUT</span> /profile/{id} &lt;body&gt;
+            <br/>
+            <span class="ml-4 text-slate-600">&rarr;</span> <span class="text-slate-300">1.</span>
+            <span class="text-rose-300">UPDATE user_profiles SET &hellip; WHERE id={id}</span>
+            <span class="text-slate-500">&nbsp;&nbsp;(SQLAlchemy / SQLite)</span>
+            <br/>
+            <span class="ml-4 text-slate-600">&rarr;</span> <span class="text-slate-300">2.</span>
+            <span class="text-indigo-400">SETEX</span> profile:{id} 600 &lt;updated json&gt;
+            <span class="text-slate-500">&nbsp;&nbsp;(Redis — cache updated atomically)</span>
+            <br/>
+            <span class="ml-4 text-slate-600">&rarr;</span> <span class="text-slate-300">3.</span> return updated profile
+            <br/>
+            <span class="ml-4 text-emerald-400">&rarr; subsequent GET profile:{id} is always a cache HIT</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- GET profile card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="bg-indigo-950 border-b border-indigo-900 px-5 py-4">
+            <span class="text-indigo-300 font-bold text-base">Read Profile</span>
+            <span class="ml-2 text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">TTL: 600s</span>
+            <p class="text-slate-400 text-xs mt-1">
+              After any PUT, this GET is always a cache HIT &mdash; the cache is kept current by every write.
+            </p>
+          </div>
+          <div class="p-5 space-y-4">
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">User ID</label>
+              <select id="wt-get-user" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-indigo-600">
+                <option value="1">1 &mdash; Alice Johnson</option>
+                <option value="2">2 &mdash; Bob Smith</option>
+                <option value="3">3 &mdash; Carol White</option>
+                <option value="4">4 &mdash; David Lee</option>
+                <option value="5">5 &mdash; Eve Martinez</option>
+              </select>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="fetchWriteThrough()" class="flex-1 bg-indigo-700 hover:bg-indigo-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                GET Profile
+              </button>
+              <button onclick="statsWriteThrough()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                Stats
+              </button>
+              <button onclick="clearWriteThrough()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                Clear
+              </button>
+            </div>
+            <div id="wt-get-result" class="hidden fade-in"></div>
+          </div>
+        </div>
+
+        <!-- PUT profile card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="bg-indigo-950 border-b border-indigo-900 px-5 py-4">
+            <span class="text-indigo-300 font-bold text-base">Update Profile <span class="text-indigo-500 text-xs font-normal">(Write-Through)</span></span>
+            <p class="text-slate-400 text-xs mt-1">
+              Writes DB + Redis atomically. The next GET is guaranteed to return this exact data.
+            </p>
+          </div>
+          <div class="p-5 space-y-3">
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">User ID</label>
+              <select id="wt-put-user" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-indigo-600">
+                <option value="1">1 &mdash; Alice Johnson</option>
+                <option value="2">2 &mdash; Bob Smith</option>
+                <option value="3">3 &mdash; Carol White</option>
+                <option value="4">4 &mdash; David Lee</option>
+                <option value="5">5 &mdash; Eve Martinez</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">Name</label>
+              <input id="wt-name" type="text" placeholder="Leave blank to skip"
+                class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-indigo-600 placeholder-slate-600"/>
+            </div>
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">Bio</label>
+              <input id="wt-bio" type="text" placeholder="Leave blank to skip"
+                class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-indigo-600 placeholder-slate-600"/>
+            </div>
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">Theme</label>
+              <select id="wt-theme" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-indigo-600">
+                <option value="">-- no change --</option>
+                <option value="dark">dark</option>
+                <option value="light">light</option>
+              </select>
+            </div>
+            <button onclick="updateWriteThrough()" class="w-full bg-indigo-700 hover:bg-indigo-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+              PUT (Write-Through)
+            </button>
+            <div class="bg-slate-800 rounded-lg p-3 text-xs text-slate-400 space-y-1">
+              <div class="flex gap-2"><span class="text-indigo-400">+</span> Cache always consistent &mdash; zero stale reads</div>
+              <div class="flex gap-2"><span class="text-indigo-400">+</span> Next GET is a guaranteed cache HIT</div>
+              <div class="flex gap-2"><span class="text-amber-400">-</span> Write latency is slightly higher (2 writes per PUT)</div>
+              <div class="flex gap-2"><span class="text-amber-400">!</span> Update a profile, then GET it &mdash; always a HIT</div>
+            </div>
+            <div id="wt-put-result" class="hidden fade-in"></div>
+          </div>
+        </div>
+
+      </div><!-- end grid -->
+    </section>
+
+    <!-- ── comparison table ─────────────────────────────────────────────── -->
+    <section>
+      <h2 class="text-lg font-bold text-slate-200 mb-4">Strategy Comparison</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left border border-slate-800 rounded-xl overflow-hidden">
+          <thead class="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
+            <tr>
+              <th class="px-4 py-3">Strategy</th>
+              <th class="px-4 py-3">TTL</th>
+              <th class="px-4 py-3">Scope</th>
+              <th class="px-4 py-3">Thread-safe</th>
+              <th class="px-4 py-3">Survives restart</th>
+              <th class="px-4 py-3">Best for</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr class="bg-slate-900 hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-violet-300">lru_cache</td>
+              <td class="px-4 py-3 text-slate-400">None</td>
+              <td class="px-4 py-3">Process</td>
+              <td class="px-4 py-3 text-emerald-400">Yes (GIL)</td>
+              <td class="px-4 py-3 text-red-400">No</td>
+              <td class="px-4 py-3 text-slate-400">Immutable config, small data sets</td>
+            </tr>
+            <tr class="bg-slate-900 hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-amber-300">TTLCache</td>
+              <td class="px-4 py-3 text-slate-400">Configurable</td>
+              <td class="px-4 py-3">Process</td>
+              <td class="px-4 py-3 text-emerald-400">Yes (Lock)</td>
+              <td class="px-4 py-3 text-red-400">No</td>
+              <td class="px-4 py-3 text-slate-400">Semi-static data (permissions, sessions)</td>
+            </tr>
+            <tr class="bg-slate-900 hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-emerald-300">Redis SETEX/GET</td>
+              <td class="px-4 py-3 text-slate-400">Configurable</td>
+              <td class="px-4 py-3">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400">Yes (atomic)</td>
+              <td class="px-4 py-3 text-emerald-400">Yes</td>
+              <td class="px-4 py-3 text-slate-400">Production, multi-instance, large payloads</td>
+            </tr>
+            <tr class="bg-slate-900 hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-sky-300">Cache-Aside</td>
+              <td class="px-4 py-3 text-slate-400">120s / 15s neg</td>
+              <td class="px-4 py-3">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400">Yes (atomic)</td>
+              <td class="px-4 py-3 text-emerald-400">Yes</td>
+              <td class="px-4 py-3 text-slate-400">Read-heavy, ORM-backed, negative caching</td>
+            </tr>
+            <tr class="bg-slate-900 hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-indigo-300">Write-Through</td>
+              <td class="px-4 py-3 text-slate-400">600s</td>
+              <td class="px-4 py-3">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400">Yes (atomic)</td>
+              <td class="px-4 py-3 text-emerald-400">Yes</td>
+              <td class="px-4 py-3 text-slate-400">Frequently updated data, zero stale tolerance</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!--  JavaScript                                                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
   <script>
-    async function callBackend() {
-      const pre = document.getElementById("output");
-      pre.textContent = "Loading...";
-      try {
-        const res  = await fetch("/api/hello");
-        const data = await res.json();
-        pre.textContent = JSON.stringify(data, null, 2);
-      } catch (err) {
-        pre.textContent = "Error: " + err.message;
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function badgeHit(hit) {
+    return hit
+      ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300 text-xs font-bold">&#x25CF; CACHE HIT</span>'
+      : '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-900 text-red-400 text-xs font-bold">&#x25CB; CACHE MISS</span>';
+  }
+
+  function badgeLatency(ms) {
+    const cls = ms < 10 ? 'text-emerald-400' : ms < 50 ? 'text-amber-400' : 'text-red-400';
+    return `<span class="${cls} font-bold">${ms.toFixed(1)} ms</span>`;
+  }
+
+  function sourceTag(src) {
+    const map = {
+      lru_cache:            'bg-violet-900 text-violet-300',
+      ttl_cache:            'bg-amber-900 text-amber-300',
+      redis:                'bg-emerald-900 text-emerald-300',
+      redis_cache_aside:    'bg-sky-900 text-sky-300',
+      redis_negative_cache: 'bg-orange-900 text-orange-300',
+      redis_write_through:  'bg-indigo-900 text-indigo-300',
+      simulated_db:         'bg-slate-700 text-slate-300',
+      sqlalchemy_db:        'bg-rose-900 text-rose-300',
+    };
+    const cls = map[src] || 'bg-slate-700 text-slate-300';
+    return `<span class="px-2 py-0.5 rounded-full text-xs font-semibold ${cls}">${src}</span>`;
+  }
+
+  function renderResult(containerId, json, isError) {
+    const el = document.getElementById(containerId);
+    el.classList.remove('hidden');
+    el.classList.add('fade-in');
+
+    if (isError) {
+      // Structured 404 from negative-cache hit — render as a rich result
+      const detail = json.detail;
+      if (detail && typeof detail === 'object' && 'cache_hit' in detail) {
+        const inner = detail;
+        el.innerHTML = `
+          <div class="bg-slate-800 rounded-lg p-4 text-xs">
+            <div class="flex flex-wrap items-center gap-3 mb-3">
+              ${badgeHit(inner.cache_hit)}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-900 text-orange-300 text-xs font-bold">404 NOT FOUND</span>
+              <span class="text-slate-500 text-xs">latency:</span>${badgeLatency(inner.latency_ms)}
+              <span class="text-slate-500 text-xs">source:</span>${sourceTag(inner.source)}
+              ${inner.ttl_remaining_seconds != null
+                ? `<span class="text-slate-500 text-xs">TTL:</span><span class="text-slate-300 text-xs font-semibold">${inner.ttl_remaining_seconds}s</span>`
+                : ''}
+            </div>
+            <pre class="text-slate-300 text-xs leading-relaxed overflow-auto max-h-64">${JSON.stringify(json, null, 2)}</pre>
+            ${inner.note ? `<p class="text-xs text-slate-500 mt-2 italic">${inner.note}</p>` : ''}
+          </div>`;
+        el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+        return;
       }
+      const msg = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : (detail || json.error || 'Unknown error');
+      el.innerHTML = `<div class="bg-red-950 border border-red-800 rounded-lg p-3 text-red-400 text-xs"><pre class="whitespace-pre-wrap">${msg}</pre></div>`;
+      return;
     }
+
+    const topRow = ('cache_hit' in json)
+      ? `<div class="flex flex-wrap items-center gap-3 mb-3">
+           ${badgeHit(json.cache_hit)}
+           <span class="text-slate-500 text-xs">latency:</span>${badgeLatency(json.latency_ms)}
+           <span class="text-slate-500 text-xs">source:</span>${sourceTag(json.source)}
+           ${json.ttl_remaining_seconds != null
+             ? `<span class="text-slate-500 text-xs">TTL remaining:</span><span class="text-slate-300 text-xs font-semibold">${json.ttl_remaining_seconds}s</span>`
+             : ''}
+         </div>`
+      : ('write_through' in json)
+      ? `<div class="flex flex-wrap items-center gap-3 mb-3">
+           <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-900 text-indigo-300 text-xs font-bold">&#x21D5; WRITE-THROUGH</span>
+           <span class="text-slate-500 text-xs">db:</span><span class="${json.db_updated ? 'text-emerald-400' : 'text-red-400'} text-xs font-bold">${json.db_updated ? 'updated' : 'failed'}</span>
+           <span class="text-slate-500 text-xs">cache:</span><span class="${json.cache_updated ? 'text-emerald-400' : 'text-red-400'} text-xs font-bold">${json.cache_updated ? 'updated' : 'failed'}</span>
+           <span class="text-slate-500 text-xs">write time:</span><span class="text-slate-300 text-xs font-semibold">${json.db_write_ms?.toFixed(1)} ms</span>
+         </div>`
+      : '';
+
+    const noteRow = json.note
+      ? `<p class="text-xs text-slate-500 mt-2 italic">${json.note}</p>`
+      : '';
+
+    el.innerHTML = `
+      <div class="bg-slate-800 rounded-lg p-4 text-xs">
+        ${topRow}
+        <pre class="text-slate-300 text-xs leading-relaxed overflow-auto max-h-64">${JSON.stringify(json, null, 2)}</pre>
+        ${noteRow}
+      </div>`;
+
+    // re-trigger animation
+    el.classList.remove('fade-in');
+    void el.offsetWidth;
+    el.classList.add('fade-in');
+  }
+
+  function loading(containerId) {
+    const el = document.getElementById(containerId);
+    el.classList.remove('hidden');
+    el.innerHTML = `<div class="bg-slate-800 rounded-lg p-4 text-slate-500 text-xs flex items-center gap-2">
+      <span class="spinner text-violet-400 text-base">&#9696;</span> Fetching&hellip;
+    </div>`;
+  }
+
+  async function apiCall(containerId, url, method = 'GET') {
+    loading(containerId);
+    try {
+      const r = await fetch(url, { method });
+      const json = await r.json();
+      renderResult(containerId, json, !r.ok);
+    } catch (e) {
+      renderResult(containerId, { error: e.message }, true);
+    }
+  }
+
+  // ── lru_cache ─────────────────────────────────────────────────────────────
+  function fetchLru() {
+    const code = document.getElementById('lru-country').value;
+    apiCall('lru-result', `/api/lru/country/${code}`);
+  }
+  function statsLru() { apiCall('lru-result', '/api/lru/stats'); }
+  function clearLru() { apiCall('lru-result', '/api/lru/cache', 'DELETE'); }
+
+  // ── TTLCache ──────────────────────────────────────────────────────────────
+  function fetchTtl() {
+    const id = document.getElementById('ttl-user').value;
+    apiCall('ttl-result', `/api/ttl/user/${id}`);
+  }
+  function statsTtl() { apiCall('ttl-result', '/api/ttl/stats'); }
+  function clearTtl() { apiCall('ttl-result', '/api/ttl/cache', 'DELETE'); }
+
+  // ── Redis ─────────────────────────────────────────────────────────────────
+  function fetchRedis() {
+    const id = document.getElementById('redis-product').value;
+    apiCall('redis-result', `/api/redis/product/${id}`);
+  }
+  function statsRedis() { apiCall('redis-result', '/api/redis/stats'); }
+  function clearRedis() { apiCall('redis-result', '/api/redis/cache', 'DELETE'); }
+
+  // ── Cache-Aside (2.3) ────────────────────────────────────────────────────
+  function fetchCacheAside() {
+    const id = document.getElementById('ca-order').value;
+    apiCall('ca-result', `/api/cache-aside/order/${id}`);
+  }
+  function statsCacheAside() { apiCall('ca-result', '/api/cache-aside/stats'); }
+  function clearCacheAside() { apiCall('ca-result', '/api/cache-aside/cache', 'DELETE'); }
+
+  // ── Write-Through (2.4) ──────────────────────────────────────────────────
+  function fetchWriteThrough() {
+    const id = document.getElementById('wt-get-user').value;
+    apiCall('wt-get-result', `/api/write-through/profile/${id}`);
+  }
+  function statsWriteThrough() { apiCall('wt-get-result', '/api/write-through/stats'); }
+  function clearWriteThrough() { apiCall('wt-get-result', '/api/write-through/cache', 'DELETE'); }
+
+  async function updateWriteThrough() {
+    const id    = document.getElementById('wt-put-user').value;
+    const name  = document.getElementById('wt-name').value.trim();
+    const bio   = document.getElementById('wt-bio').value.trim();
+    const theme = document.getElementById('wt-theme').value;
+
+    const body = {};
+    if (name)  body.name = name;
+    if (bio)   body.bio  = bio;
+    if (theme) body.preferences = { theme };
+
+    if (Object.keys(body).length === 0) {
+      renderResult('wt-put-result', { error: 'Fill in at least one field before submitting.' }, true);
+      return;
+    }
+
+    loading('wt-put-result');
+    try {
+      const r = await fetch(`/api/write-through/profile/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const json = await r.json();
+      renderResult('wt-put-result', json, !r.ok);
+    } catch (e) {
+      renderResult('wt-put-result', { error: e.message }, true);
+    }
+  }
+
+  // ── Health check on page load ─────────────────────────────────────────────
+  (async function checkHealth() {
+    const badge = document.getElementById('health-badge');
+    try {
+      const r = await fetch('/api/health');
+      const json = await r.json();
+      const redisOk = json.redis;
+      badge.className = 'text-xs px-3 py-1 rounded-full ' + (r.ok ? 'bg-emerald-900 text-emerald-300' : 'bg-red-900 text-red-400');
+      badge.textContent = r.ok
+        ? `backend ok | redis ${redisOk ? 'ok' : 'offline'}`
+        : 'backend error';
+    } catch {
+      badge.className = 'text-xs px-3 py-1 rounded-full bg-red-900 text-red-400';
+      badge.textContent = 'backend unreachable';
+    }
+  })();
   </script>
+
 </body>
 </html>

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.6 Read-Through — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">
+          ← Back
+        </a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-teal-400 font-black text-lg">2.6</span>
+          <span class="text-white font-bold text-lg ml-2">Read-Through Pattern</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-teal-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-teal-300 mb-3">What is Read-Through Caching?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        The <strong class="text-slate-200">cache layer itself</strong> is responsible for fetching from the database
+        on a miss. Application code <em>only talks to the cache</em> — it never issues
+        <code class="text-teal-300 font-mono text-xs">GET</code> / <code class="text-teal-300 font-mono text-xs">SETEX</code>
+        calls directly. Here, <code class="text-teal-300 font-mono text-xs">aiocache</code>'s
+        <code class="text-teal-300 font-mono text-xs">@cached</code> decorator intercepts every function call,
+        checks Redis, and only executes the function body (the DB query) when there is a miss — then
+        stores the result automatically.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-teal-400 font-semibold">HIT path</div>
+          <div class="text-slate-300">aiocache returns from Redis in &lt; 2 ms. The decorated function body never runs.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-teal-400 font-semibold">MISS path</div>
+          <div class="text-slate-300">aiocache calls the function body (DB query ~180 ms), stores result in Redis, returns it.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-teal-400 font-semibold">Key distinction</div>
+          <div class="text-slate-300">No <code class="font-mono text-teal-300">redis.get()</code> or <code class="font-mono text-teal-300">redis.setex()</code> anywhere in endpoint or service code.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pattern diagram ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-teal-950 to-slate-900 border-b border-teal-900 px-5 py-4">
+        <h3 class="text-teal-300 font-bold text-base">Read-Through Flow</h3>
+        <p class="text-slate-400 text-xs mt-1">
+          TTL: <code class="text-slate-200 font-mono">240 s</code> — Namespace: <code class="text-slate-200 font-mono">rt</code> — Key pattern: <code class="text-slate-200 font-mono">rt:article:{id}</code>
+        </p>
+      </div>
+      <div class="p-5">
+        <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono leading-loose">
+          <div class="mb-3">
+            <span class="text-teal-300 font-bold">GET /v1/read-through/article/{id}</span>
+            <span class="text-slate-500 ml-2">(endpoint code — zero Redis commands)</span>
+          </div>
+          <div class="space-y-1 text-slate-400 pl-4 border-l-2 border-teal-800">
+            <div><span class="text-teal-400">1.</span> <span class="text-slate-300">data = await _rt_fetch_article(article_id)</span> <span class="text-teal-500 ml-2">← only line in endpoint touching data</span></div>
+            <div><span class="text-teal-400">2a.</span> <span class="text-emerald-400">HIT:</span>  <span class="text-slate-300">aiocache.GET rt:article:{id}</span>  <span class="text-slate-500 ml-2">→ returns cached dict (&lt; 2 ms)</span></div>
+            <div><span class="text-teal-400">2b.</span> <span class="text-amber-400">MISS:</span> <span class="text-slate-300">aiocache calls function body</span>  <span class="text-slate-500 ml-2">→ DB query (~180 ms)</span></div>
+            <div><span class="text-teal-400">2c.</span> <span class="text-slate-300">aiocache.SET rt:article:{id} EX 240</span> <span class="text-slate-500 ml-2">← stored automatically</span></div>
+            <div><span class="text-teal-400">3.</span>  <span class="text-slate-300">return {data, cache_hit, latency_ms, ...}</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Code comparison ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="border-b border-slate-800 px-5 py-4">
+        <h3 class="text-slate-200 font-bold text-base">Read-Through vs Cache-Aside</h3>
+        <p class="text-slate-400 text-xs mt-1">Same outcome — different ownership of cache logic</p>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800">
+        <div class="p-5">
+          <div class="text-teal-400 font-semibold text-xs mb-3 uppercase tracking-wider">2.6 Read-Through (this demo)</div>
+          <pre class="text-xs text-slate-300 leading-relaxed bg-slate-800 rounded-xl p-4"><span class="text-slate-500"># The @cached decorator IS the entire cache layer</span>
+<span class="text-teal-300">@cached</span>(ttl=240, cache=Cache.REDIS,
+        namespace=<span class="text-amber-300">"rt"</span>,
+        serializer=JsonSerializer(),
+        key_builder=_rt_key_builder)
+<span class="text-sky-400">async def</span> _rt_fetch_article(article_id):
+    <span class="text-slate-500"># executes ONLY on cache miss</span>
+    <span class="text-sky-400">return await</span> db.get(CatalogItem, article_id)
+
+<span class="text-slate-500"># Endpoint — zero Redis commands</span>
+<span class="text-teal-300">@app.get</span>(<span class="text-amber-300">"/v1/read-through/article/{id}"</span>)
+<span class="text-sky-400">async def</span> endpoint(article_id):
+    data = <span class="text-sky-400">await</span> _rt_fetch_article(article_id)
+    <span class="text-sky-400">return</span> {<span class="text-amber-300">"data"</span>: data}</pre>
+        </div>
+        <div class="p-5">
+          <div class="text-sky-400 font-semibold text-xs mb-3 uppercase tracking-wider">2.3 Cache-Aside (manual)</div>
+          <pre class="text-xs text-slate-300 leading-relaxed bg-slate-800 rounded-xl p-4"><span class="text-slate-500"># Endpoint owns ALL cache logic</span>
+
+<span class="text-teal-300">@app.get</span>(<span class="text-amber-300">"/v1/cache-aside/order/{id}"</span>)
+<span class="text-sky-400">async def</span> endpoint(order_id, redis, db):
+
+    <span class="text-slate-500"># 1. Check cache manually</span>
+    raw = <span class="text-sky-400">await</span> redis.get(f<span class="text-amber-300">"order:{order_id}"</span>)
+    <span class="text-sky-400">if</span> raw:
+        <span class="text-sky-400">return</span> json.loads(raw)
+
+    <span class="text-slate-500"># 2. DB fetch on miss</span>
+    data = <span class="text-sky-400">await</span> db.get(Order, order_id)
+
+    <span class="text-slate-500"># 3. Populate cache manually</span>
+    <span class="text-sky-400">await</span> redis.setex(key, 300, json.dumps(data))
+    <span class="text-sky-400">return</span> data</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Demo ───────────────────────────────────────────────────────────── -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      <!-- ── Fetch Article ─────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-teal-950 to-slate-900 border-b border-teal-900 px-5 py-4">
+          <h3 class="text-teal-300 font-bold">Fetch Article — Read-Through</h3>
+          <p class="text-slate-400 text-xs mt-1">
+            First fetch hits SQLite (~180 ms). Every subsequent fetch returns from Redis (&lt; 2 ms).
+          </p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Article ID</label>
+            <select id="article-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-teal-500">
+              <option value="1">1 — Python Distributed Systems</option>
+              <option value="2">2 — Redis in Action</option>
+              <option value="3">3 — Designing Data-Intensive Applications</option>
+              <option value="4">4 — FastAPI Course — Pro Bundle</option>
+              <option value="5">5 — Caching Patterns Handbook</option>
+              <option value="6">6 — SQLAlchemy Async Mastery</option>
+            </select>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="fetchArticle()" class="px-4 py-2 bg-teal-700 hover:bg-teal-600 rounded-lg text-sm font-semibold transition-colors">
+              Fetch Article
+            </button>
+            <button onclick="fetchAll()" class="px-4 py-2 bg-teal-900 hover:bg-teal-800 rounded-lg text-sm font-semibold transition-colors">
+              Fetch All (1–6)
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            <strong class="text-teal-300">Try this:</strong> Fetch the same article twice.
+            First call → <code class="text-amber-300 font-mono">cache_hit: false</code>, ~180 ms.
+            Second call → <code class="text-emerald-300 font-mono">cache_hit: true</code>, &lt; 2 ms.
+          </p>
+          <div id="fetch-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Stats & Cache Control ─────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-teal-950 to-slate-900 border-b border-teal-900 px-5 py-4">
+          <h3 class="text-teal-300 font-bold">Stats &amp; Cache Control</h3>
+          <p class="text-slate-400 text-xs mt-1">
+            Hit ratio, active Redis keys, and TTL — then clear and repeat.
+          </p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="viewStats()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-semibold transition-colors">
+              View Stats
+            </button>
+            <button onclick="clearCache()" class="px-4 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-semibold transition-colors">
+              Clear Cache
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            <strong class="text-amber-300">Workflow:</strong>
+            Fetch All articles → View Stats (hit ratio &amp; cached keys) →
+            Clear Cache → Fetch same articles again (all misses) →
+            Fetch again (all hits).
+          </p>
+          <div id="stats-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /grid -->
+
+    <!-- ── Comparison table ──────────────────────────────────────────────── -->
+    <section>
+      <h2 class="text-base font-bold text-slate-200 mb-4">Read-Through vs Cache-Aside</h2>
+      <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <table class="w-full text-sm text-left">
+          <thead class="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
+            <tr>
+              <th class="px-4 py-3">Aspect</th>
+              <th class="px-4 py-3">Read-Through (2.6)</th>
+              <th class="px-4 py-3">Cache-Aside (2.3)</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 bg-slate-900 text-xs text-slate-400">
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Cache logic location</td>
+              <td class="px-4 py-3 text-emerald-400">Inside <code class="font-mono">@cached</code> decorator — zero app code</td>
+              <td class="px-4 py-3 text-amber-400">Inside the endpoint — GET → miss → DB → SETEX</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">HIT latency</td>
+              <td class="px-4 py-3 text-emerald-400">&lt; 2 ms (Redis via aiocache)</td>
+              <td class="px-4 py-3 text-emerald-400">&lt; 2 ms (redis.get)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">MISS latency</td>
+              <td class="px-4 py-3 text-amber-400">~180 ms (DB fetch + auto-store)</td>
+              <td class="px-4 py-3 text-amber-400">~180 ms (DB fetch + manual SETEX)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Requires cache library</td>
+              <td class="px-4 py-3 text-amber-400">Yes — aiocache (or similar)</td>
+              <td class="px-4 py-3 text-emerald-400">No — plain redis-py</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Code cleanliness</td>
+              <td class="px-4 py-3 text-emerald-400">Endpoint is pure business logic</td>
+              <td class="px-4 py-3 text-amber-400">Endpoint mixes cache + business logic</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Custom TTL per call</td>
+              <td class="px-4 py-3 text-amber-400">Fixed at decorator definition</td>
+              <td class="px-4 py-3 text-emerald-400">Flexible — set per request</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Best for</td>
+              <td class="px-4 py-3">Read-heavy, uniform data, DRY codebase</td>
+              <td class="px-4 py-3">Selective caching, complex logic, negative TTLs</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  // ── Utilities ────────────────────────────────────────────────────────────────
+  function loading(id) {
+    document.getElementById(id).innerHTML = '<span class="spinner text-slate-400">↻</span> loading…';
+  }
+
+  async function call(resultId, url, method = 'GET') {
+    loading(resultId);
+    try {
+      const r = await fetch(url, { method });
+      const json = await r.json();
+      const el = document.getElementById(resultId);
+      el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in';
+      el.innerHTML = `<pre class="${r.ok ? 'text-slate-300' : 'text-red-400'} leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+    } catch (e) {
+      document.getElementById(resultId).innerHTML = `<span class="text-red-400">${e.message}</span>`;
+    }
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+
+  function fetchArticle() {
+    const id = document.getElementById('article-id').value;
+    call('fetch-result', `/api/read-through/article/${id}`);
+  }
+
+  async function fetchAll() {
+    loading('fetch-result');
+    const results = [];
+    for (let i = 1; i <= 6; i++) {
+      try {
+        const r = await fetch(`/api/read-through/article/${i}`);
+        const j = await r.json();
+        results.push({ id: i, cache_hit: j.cache_hit, source: j.source, latency_ms: j.latency_ms });
+      } catch (e) {
+        results.push({ id: i, error: e.message });
+      }
+    }
+    const el = document.getElementById('fetch-result');
+    el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in';
+    el.innerHTML = `<pre class="text-slate-300 leading-relaxed">${JSON.stringify(results, null, 2)}</pre>`;
+  }
+
+  function viewStats() {
+    call('stats-result', '/api/read-through/stats');
+  }
+
+  function clearCache() {
+    call('stats-result', '/api/read-through/cache', 'DELETE');
+  }
+
+  // ── Health check ─────────────────────────────────────────────────────────────
+  async function checkHealth() {
+    try {
+      const r = await fetch('/api/health');
+      const j = await r.json();
+      const badge = document.getElementById('health-badge');
+      if (j.redis === 'ok') {
+        badge.className = 'text-xs px-3 py-1.5 rounded-full bg-emerald-900 text-emerald-300 font-mono';
+        badge.textContent = '● Redis ok';
+      } else {
+        badge.className = 'text-xs px-3 py-1.5 rounded-full bg-red-900 text-red-300 font-mono';
+        badge.textContent = '● Redis down';
+      }
+    } catch {
+      document.getElementById('health-badge').textContent = 'offline';
+    }
+  }
+
+  checkHealth();
+  </script>
+
+</body>
+</html>

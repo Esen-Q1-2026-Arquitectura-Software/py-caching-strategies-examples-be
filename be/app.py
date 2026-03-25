@@ -11,6 +11,11 @@ Demonstrates:
       • reusable decorator, SQLAlchemy ORM, negative caching (null TTL)
   2.4 Write-Through Pattern
       • synchronous write to DB + cache on every PUT, eliminating stale reads
+  2.5 Write-Behind (Write-Back) Pattern
+      • Redis Stream queue, background worker bulk-flushes to DB every 5 s
+  2.6 Read-Through Pattern
+      • aiocache @cached decorator — cache layer fetches from DB on miss
+      • endpoint code has zero Redis commands; @cached is fully transparent
 
 Each endpoint returns:
   {data, cache_hit, source, latency_ms, ...}
@@ -27,6 +32,8 @@ from functools import lru_cache, wraps
 from typing import Optional
 
 import redis.asyncio as aioredis
+from aiocache import Cache, cached
+from aiocache.serializers import JsonSerializer
 from cachetools import TTLCache
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +49,12 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 DATABASE_URL = "sqlite+aiosqlite:///./demo.db"
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# Redis connection info — needed at module level so the @cached decorator
+# (applied at import time) can reference the host/port for aiocache.
+_REDIS_URL_RAW = os.getenv("REDIS_URL", "redis://localhost:6379")
+_AIOCACHE_HOST = _REDIS_URL_RAW.split("://")[1].split(":")[0]  # "redis" or "localhost"
+_AIOCACHE_PORT = 6379
 
 
 async def get_db():
@@ -93,6 +106,17 @@ class EventLog(Base):
     user_id = Column(Integer, nullable=False)
     payload = Column(JSON, nullable=False)
     created_at = Column(Float, nullable=False)  # unix epoch timestamp
+
+
+class CatalogItem(Base):
+    """Catalog items — source of truth for the 2.6 Read-Through demo."""
+
+    __tablename__ = "catalog_items"
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)
+    category = Column(String(80), nullable=False)
+    description = Column(String(500), nullable=False)
+    price = Column(Float, nullable=False)
 
 
 # ── Seed data ─────────────────────────────────────────────────────────────────
@@ -181,6 +205,51 @@ _SEED_PROFILES = [
         "email": "eve@example.com",
         "bio": "Full-stack developer, digital nomad.",
         "preferences": {"theme": "dark", "language": "es", "notifications": False},
+    },
+]
+
+_SEED_CATALOG = [
+    {
+        "id": 1,
+        "title": "Python Distributed Systems",
+        "category": "Book",
+        "description": "Deep dive into building scalable services with Python.",
+        "price": 39.99,
+    },
+    {
+        "id": 2,
+        "title": "Redis in Action",
+        "category": "Book",
+        "description": "Practical Redis patterns and real-world production use cases.",
+        "price": 34.99,
+    },
+    {
+        "id": 3,
+        "title": "Designing Data-Intensive Applications",
+        "category": "Book",
+        "description": "The definitive guide to modern data systems at scale.",
+        "price": 44.99,
+    },
+    {
+        "id": 4,
+        "title": "FastAPI Course — Pro Bundle",
+        "category": "Course",
+        "description": "Full production FastAPI development from zero to deployment.",
+        "price": 79.00,
+    },
+    {
+        "id": 5,
+        "title": "Caching Patterns Handbook",
+        "category": "eBook",
+        "description": "Patterns from LRU to Read-Through explained with real examples.",
+        "price": 19.99,
+    },
+    {
+        "id": 6,
+        "title": "SQLAlchemy Async Mastery",
+        "category": "Course",
+        "description": "Async ORM patterns for high-concurrency FastAPI applications.",
+        "price": 59.00,
     },
 ]
 
@@ -371,6 +440,15 @@ async def lifespan(app: FastAPI):
                 session.add(UserProfile(**row))
             await session.commit()
             print("DB seeded with orders and user profiles.")
+
+        existing_catalog = (
+            (await session.execute(select(CatalogItem))).scalars().first()
+        )
+        if existing_catalog is None:
+            for row in _SEED_CATALOG:
+                session.add(CatalogItem(**row))
+            await session.commit()
+            print("DB seeded with catalog items.")
 
     # ── Redis connection pool ─────────────────────────────────────────────────
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -1504,5 +1582,179 @@ async def write_behind_clear(
 
     return {
         "message": "Write-Behind data cleared — stream, DB, and stats reset.",
+        "ok": True,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2.6  READ-THROUGH PATTERN — aiocache @cached decorator
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+#  App → @cached(_rt_fetch_article) → Redis
+#          ├─ HIT:  return from Redis immediately (body never executes)
+#          └─ MISS: call function body → SQLite → store in Redis → return
+#
+#  The endpoint code has ZERO Redis commands — the @cached decorator owns
+#  the entire cache lifecycle. Compare with 2.3 (Cache-Aside) where the
+#  endpoint manually does: GET → miss? → DB → SETEX.
+# ───────────────────────────────────────────────────────────────────────────────
+
+_RT_TTL = 240  # 4-minute TTL for catalog items
+_rt_hits: int = 0
+_rt_misses: int = 0
+
+
+def _rt_key_builder(func, article_id: int) -> str:
+    """Produces predictable, scannable Redis keys: rt:article:{id}"""
+    return f"article:{article_id}"
+
+
+@cached(
+    ttl=_RT_TTL,
+    cache=Cache.REDIS,
+    endpoint=_AIOCACHE_HOST,
+    port=_AIOCACHE_PORT,
+    namespace="rt",
+    serializer=JsonSerializer(),
+    key_builder=_rt_key_builder,
+)
+async def _rt_fetch_article(article_id: int) -> Optional[dict]:
+    """
+    DB loader — this body executes ONLY on a cache miss.
+
+    aiocache intercepts every call to this function:
+      • HIT  → returns the cached dict from Redis; this body is skipped entirely.
+      • MISS → executes this body, stores the result in Redis, then returns it.
+
+    The @cached decorator IS the Read-Through pattern.
+    """
+    await asyncio.sleep(0.18)  # simulate 180 ms DB round-trip
+    async with AsyncSessionLocal() as session:
+        row = await session.get(CatalogItem, article_id)
+        if row is None:
+            return None
+        return {
+            "id": row.id,
+            "title": row.title,
+            "category": row.category,
+            "description": row.description,
+            "price": row.price,
+        }
+
+
+@app.get("/v1/read-through/article/{article_id}")
+async def read_through_get_article(
+    article_id: int,
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+):
+    """
+    Read-Through GET.  The endpoint never issues Redis commands directly.
+    It just calls _rt_fetch_article() and lets aiocache manage the cache.
+    """
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    if article_id < 1 or article_id > 6:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No catalog item with id={article_id} (valid: 1–6)",
+        )
+
+    global _rt_hits, _rt_misses
+
+    # Peek at Redis BEFORE the call — for observability / hit-miss reporting only.
+    # This does NOT bypass the Read-Through mechanism: data is still fetched and
+    # stored exclusively by the @cached decorator below.
+    cache_key = f"rt:article:{article_id}"
+    pre_exists = bool(await redis.exists(cache_key))
+
+    t0 = time.perf_counter()
+
+    # ── THE READ-THROUGH CALL ─────────────────────────────────────────────────
+    # No GET, no SETEX here. aiocache returns from Redis on HIT, or calls the
+    # function body (DB fetch + Redis store) on MISS — all transparently.
+    data = await _rt_fetch_article(article_id)
+
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    if data is None:
+        raise HTTPException(
+            status_code=404, detail=f"Catalog item {article_id} not found"
+        )
+
+    if pre_exists:
+        _rt_hits += 1
+    else:
+        _rt_misses += 1
+
+    return {
+        "data": data,
+        "cache_hit": pre_exists,
+        "source": "aiocache_redis" if pre_exists else "sqlite_db",
+        "latency_ms": latency_ms,
+        "cache_key": cache_key,
+        "ttl_seconds": _RT_TTL,
+        "pattern": "read-through",
+        "note": (
+            "Endpoint code has zero Redis commands — "
+            "@cached handles the entire cache lifecycle transparently"
+        ),
+    }
+
+
+@app.get("/v1/read-through/stats")
+async def read_through_stats(
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+):
+    total = _rt_hits + _rt_misses
+    hit_ratio = round(_rt_hits / total * 100, 1) if total > 0 else 0.0
+
+    cached_keys: list[str] = []
+    if redis:
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match="rt:article:*", count=100)
+            cached_keys.extend(keys)
+            if cursor == 0:
+                break
+
+    return {
+        "hits": _rt_hits,
+        "misses": _rt_misses,
+        "total_requests": total,
+        "hit_ratio_pct": hit_ratio,
+        "cached_item_count": len(cached_keys),
+        "cached_keys": sorted(cached_keys),
+        "ttl_seconds": _RT_TTL,
+        "strategy": "read-through",
+        "library": "aiocache>=0.12",
+        "decorator": "@cached(ttl=240, cache=Cache.REDIS, namespace='rt')",
+    }
+
+
+@app.delete("/v1/read-through/cache")
+async def read_through_clear(
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+):
+    """Evict all Read-Through cache entries and reset hit/miss counters."""
+    global _rt_hits, _rt_misses
+
+    deleted_keys: list[str] = []
+    if redis:
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match="rt:*", count=100)
+            if keys:
+                await redis.delete(*keys)
+                deleted_keys.extend(keys)
+            if cursor == 0:
+                break
+
+    _rt_hits = 0
+    _rt_misses = 0
+
+    return {
+        "message": "Read-Through cache cleared — all rt:* keys deleted and stats reset.",
+        "deleted_keys": sorted(deleted_keys),
+        "deleted_count": len(deleted_keys),
         "ok": True,
     }

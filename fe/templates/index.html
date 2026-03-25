@@ -189,8 +189,8 @@
 
     </section>
 
-    <!-- ── Row 2: Cards 2.4 + 2.5 ───────────────────────────────────────── -->
-    <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- ── Row 2: Cards 2.4 + 2.5 + 2.6 ────────────────────────────────── -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
       <!-- ── Card 2.4 ──────────────────────────────────────────── -->
       <a href="/strategy/24"
@@ -276,6 +276,52 @@
             </div>
           </div>
           <div class="flex items-center text-rose-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
+      <!-- ── Card 2.6 ──────────────────────────────────────────── -->
+      <a href="/strategy/26"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-teal-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-teal-400 leading-none">2.6</span>
+            <span class="badge bg-teal-900 text-teal-300 mt-1">Read-Through</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">Read-Through Pattern</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            <code class="text-teal-300 font-mono text-xs">@cached</code> decorator makes the cache
+            transparent — endpoint code never touches Redis.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-teal-500 flex-shrink-0"></span>
+              <span>aiocache <code class="text-teal-300 font-mono text-xs">@cached</code> wraps DB loader — HIT never calls body</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-teal-500 flex-shrink-0"></span>
+              <span>Zero cache logic in endpoint vs Cache-Aside manual GET/SET</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">~1 ms</div>
+              <div class="text-slate-500 mt-0.5">HIT latency</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">240 s</div>
+              <div class="text-slate-500 mt-0.5">TTL</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-teal-400 font-bold">aiocache</div>
+              <div class="text-slate-500 mt-0.5">library</div>
+            </div>
+          </div>
+          <div class="flex items-center text-teal-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
             <span>Open demo</span>
             <span class="transition-transform group-hover:translate-x-1">→</span>
           </div>

@@ -11,6 +11,7 @@ Pages:
   GET  /strategy/23             — 2.3 Cache-Aside Pattern
   GET  /strategy/24             — 2.4 Write-Through Pattern
   GET  /strategy/25             — 2.5 Write-Behind (Write-Back) Pattern
+  GET  /strategy/26             — 2.6 Read-Through Pattern (aiocache)
 
 API Proxies: (see routes below)
 """
@@ -71,6 +72,11 @@ def strategy_24():
 @app.get("/strategy/25")
 def strategy_25():
     return render_template("strategy_25.html")
+
+
+@app.get("/strategy/26")
+def strategy_26():
+    return render_template("strategy_26.html")
 
 
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
@@ -194,6 +200,24 @@ def write_behind_flush():
 @app.route("/api/write-behind/clear", methods=["DELETE"])
 def write_behind_clear():
     return _proxy("DELETE", "/v1/write-behind/clear")
+
+
+# ── Read-Through (2.6) proxy ──────────────────────────────────────────────────
+
+
+@app.get("/api/read-through/article/<int:article_id>")
+def read_through_get_article(article_id: int):
+    return _proxy("GET", f"/v1/read-through/article/{article_id}")
+
+
+@app.get("/api/read-through/stats")
+def read_through_stats():
+    return _proxy("GET", "/v1/read-through/stats")
+
+
+@app.route("/api/read-through/cache", methods=["DELETE"])
+def read_through_clear():
+    return _proxy("DELETE", "/v1/read-through/cache")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

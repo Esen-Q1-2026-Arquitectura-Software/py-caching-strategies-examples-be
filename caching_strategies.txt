@@ -1,0 +1,2215 @@
+================================================================================
+         COMPLETE CACHING STRATEGIES GUIDE — FRONTEND & BACKEND
+         Flask (Frontend) | FastAPI (Backend) | Advanced Patterns
+         The 1% Knowledge — Expert-Level Techniques
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+PART 1 — FRONTEND CACHING (HTML, CSS, JavaScript, Flask)
+  1.1  HTTP Cache Headers — The Foundation
+  1.2  Browser Storage APIs
+  1.3  Service Worker Caching (PWA Patterns)
+  1.4  HTML Caching Strategies
+  1.5  CSS Caching Strategies
+  1.6  JavaScript Caching & Memoization
+  1.7  Flask Frontend Caching
+  1.8  CDN & Edge Caching for Frontend
+  1.9  Flask ETag & Conditional Request Handling
+  1.10 Template Fragment Caching in Flask
+
+PART 2 — BACKEND CACHING (FastAPI)
+  2.1  In-Memory Caching (lru_cache, cachetools)
+  2.2  Redis — The Core Backend Cache
+  2.3  Cache-Aside (Lazy Loading) Pattern
+  2.4  Write-Through Pattern
+  2.5  Write-Behind (Write-Back) Pattern
+  2.6  Read-Through Pattern
+  2.7  FastAPI Response Caching Middleware
+  2.8  HTTP Caching with FastAPI (ETag, Cache-Control)
+  2.9  Async Caching with aiocache
+  2.10 Database Query Caching (SQLAlchemy)
+  2.11 Cache Stampede Prevention (Mutex Lock)
+  2.12 Thundering Herd Problem Solutions
+  2.13 Two-Level Cache (L1 + L2)
+  2.14 Negative Caching & Bloom Filters
+  2.15 Cache Warming Strategies
+  2.16 Event-Driven Cache Invalidation
+  2.17 Distributed Caching & Consistent Hashing
+  2.18 Redis Advanced Patterns
+  2.19 FastAPI Dependency Injection for Caching
+  2.20 Background Task Cache Refresh
+  2.21 Stale-While-Revalidate (SWR) Pattern in FastAPI
+  2.22 Rate Limiting with Redis (Cache-Adjacent)
+  2.23 Probabilistic Early Expiry (XFetch)
+  2.24 Cache Key Design — The Art Nobody Talks About
+
+================================================================================
+                    PART 1 — FRONTEND CACHING
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+1.1  HTTP CACHE HEADERS — THE FOUNDATION
+────────────────────────────────────────────────────────────────────────────────
+What it is: Directives sent in HTTP response headers that tell browsers and
+intermediate caches (CDNs, proxies) how long to store and when to revalidate
+a resource. The single most impactful caching layer — and the most misunderstood.
+
+TECHNOLOGIES: HTTP/1.1, HTTP/2, Nginx, Apache, Flask, CDNs (Cloudflare, AWS CF)
+
+Key Headers:
+  Cache-Control  — primary cache directive (replaces Expires in HTTP/1.1+)
+  ETag           — fingerprint of the response body; enables conditional GETs
+  Last-Modified  — timestamp-based revalidation
+  Vary           — tells caches which request headers affect the response
+  Pragma         — legacy HTTP/1.0 (only use Cache-Control now)
+
+Cache-Control directive cheat sheet:
+  max-age=N           — browser caches for N seconds
+  s-maxage=N          — CDN/proxy caches for N seconds (overrides max-age for shared caches)
+  no-cache            — MUST revalidate with server before using cached copy
+  no-store            — NEVER cache (sensitive data)
+  private             — only browser can cache, not CDN
+  public              — CDN can cache even if Authorization header present
+  immutable           — DO NOT revalidate even on hard refresh (use with hash filenames)
+  stale-while-revalidate=N — serve stale while fetching fresh in background
+  stale-if-error=N    — serve stale if server is down (resilience!)
+  must-revalidate     — disallow stale serving even if server is down
+
+=== CODE EXAMPLE — Flask sending optimal headers ===
+
+from flask import Flask, make_response, send_file
+import hashlib, json
+
+app = Flask(__name__)
+
+@app.route("/api/data")
+def cacheable_api():
+    data = {"key": "value"}
+    body = json.dumps(data)
+    etag = hashlib.md5(body.encode()).hexdigest()
+    
+    response = make_response(body)
+    response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=30"
+    response.headers["ETag"] = f'"{etag}"'
+    response.headers["Content-Type"] = "application/json"
+    return response
+
+@app.route("/static/app.<hash>.js")
+def hashed_asset(hash):
+    # Immutable: hashed filename = content never changes
+    response = make_response(send_file("static/app.js"))
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+TIP (1% knowledge): Use `s-maxage` separately from `max-age` to give CDNs a
+longer TTL than browsers. Example: browser caches 60s, CDN caches 3600s:
+  Cache-Control: public, max-age=60, s-maxage=3600
+
+TIP: The `Vary` header is dangerous when misused. `Vary: *` effectively
+disables CDN caching. Always be as specific as possible:
+  Vary: Accept-Encoding, Accept-Language   ← correct
+  Vary: *                                  ← disables CDN cache — BAD
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.2  BROWSER STORAGE APIs
+────────────────────────────────────────────────────────────────────────────────
+What it is: JavaScript APIs for persisting data client-side. Choosing the wrong
+one is a very common and costly mistake.
+
+TECHNOLOGIES: Web APIs (built into all modern browsers), JavaScript
+
+localStorage      — synchronous, 5–10 MB, persists forever, same origin
+sessionStorage    — same as localStorage but cleared when tab closes
+IndexedDB         — async, 50–500+ MB, structured data, indexes, transactions
+Cache API         — async, for HTTP responses only, used with Service Workers
+cookies           — sent on EVERY request (HTTP overhead), 4 KB max per cookie
+
+=== CODE EXAMPLE — Smart localStorage with TTL (localStorage has no TTL!) ===
+
+// Pattern: wrap localStorage to add expiry — the #1 trick most miss
+const cache = {
+  set(key, value, ttlSeconds) {
+    localStorage.setItem(key, JSON.stringify({
+      value,
+      expiresAt: Date.now() + ttlSeconds * 1000
+    }));
+  },
+  get(key) {
+    const item = localStorage.getItem(key);
+    if (!item) return null;
+    const { value, expiresAt } = JSON.parse(item);
+    if (Date.now() > expiresAt) {
+      localStorage.removeItem(key);   // lazy eviction
+      return null;
+    }
+    return value;
+  }
+};
+
+cache.set("user_profile", { name: "Alice" }, 300); // expires in 5 min
+const profile = cache.get("user_profile");
+
+=== CODE EXAMPLE — IndexedDB for large structured data ===
+
+// Use idb library (tiny wrapper) — raw IndexedDB API is painful
+import { openDB } from "idb";
+
+const db = await openDB("myAppDB", 1, {
+  upgrade(db) {
+    db.createObjectStore("responses", { keyPath: "url" });
+  }
+});
+
+// Store response
+await db.put("responses", { url: "/api/products", data: products, ts: Date.now() });
+
+// Read with TTL check
+const cached = await db.get("responses", "/api/products");
+if (cached && Date.now() - cached.ts < 60_000) return cached.data;
+
+TIP (1% knowledge): IndexedDB is transactional. Use a single transaction for
+multiple reads/writes to avoid consistency bugs and get much better performance.
+
+TIP: Never store sensitive data (tokens, PII) in localStorage — it is accessible
+to any script on the page (XSS vulnerability). Use HttpOnly cookies instead.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.3  SERVICE WORKER CACHING (PWA PATTERNS)
+────────────────────────────────────────────────────────────────────────────────
+What it is: A service worker is a script that runs in the background, intercepts
+ALL network requests from your page, and can serve from cache. The most powerful
+frontend caching mechanism — and the least understood.
+
+TECHNOLOGIES: Service Worker API, Cache API, Workbox (Google), PWA
+
+The 5 Core Strategies:
+
+  CACHE FIRST (fastest, for static assets)
+    → Serve from cache. If miss, fetch from network, store, return.
+    → Use for: images, fonts, versioned JS/CSS bundles
+
+  NETWORK FIRST (freshest, for dynamic data)
+    → Try network. If fails, fall back to cache.
+    → Use for: API responses that must be fresh
+
+  STALE WHILE REVALIDATE (best UX for semi-static)
+    → Serve from cache immediately. Simultaneously fetch and update cache.
+    → Use for: news feeds, product listings, user dashboards
+
+  CACHE ONLY (offline-only resources)
+    → Only serve from cache. Never go to network.
+    → Use for: pre-cached offline shell
+
+  NETWORK ONLY (never cache)
+    → Always go to network. No caching.
+    → Use for: analytics, payments, auth endpoints
+
+=== CODE EXAMPLE — Stale-While-Revalidate in a Service Worker ===
+
+// sw.js
+self.addEventListener("fetch", event => {
+  event.respondWith(staleWhileRevalidate(event.request));
+});
+
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open("v1");
+  const cached = await cache.match(request);
+  
+  // Always fetch in background to update cache
+  const networkFetch = fetch(request).then(response => {
+    cache.put(request, response.clone());
+    return response;
+  });
+  
+  // Return cached immediately if available, else wait for network
+  return cached || networkFetch;
+}
+
+=== CODE EXAMPLE — Workbox (production-ready, declarative) ===
+
+import { registerRoute } from "workbox-routing";
+import { StaleWhileRevalidate, CacheFirst, NetworkFirst } from "workbox-strategies";
+import { CacheableResponsePlugin } from "workbox-cacheable-response";
+import { ExpirationPlugin } from "workbox-expiration";
+
+// Static assets → Cache First, 30 day expiry
+registerRoute(
+  ({ request }) => request.destination === "image",
+  new CacheFirst({
+    cacheName: "images",
+    plugins: [
+      new CacheableResponsePlugin({ statuses: [200] }),
+      new ExpirationPlugin({ maxEntries: 50, maxAgeSeconds: 30 * 24 * 60 * 60 })
+    ]
+  })
+);
+
+// API calls → Stale While Revalidate
+registerRoute(
+  ({ url }) => url.pathname.startsWith("/api/"),
+  new StaleWhileRevalidate({ cacheName: "api-cache" })
+);
+
+TIP (1% knowledge): Service Workers have a "cache update on install" gotcha.
+If you deploy a new SW version but don't increment your cache name, old cached
+assets persist. Always version your cache names: "cache-v2", "cache-v3".
+
+TIP: Service Workers only work on HTTPS (except localhost). This is a security
+requirement, not a suggestion.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.4  HTML CACHING STRATEGIES
+────────────────────────────────────────────────────────────────────────────────
+What it is: Techniques for caching HTML documents themselves — often overlooked
+because HTML is assumed to always be dynamic.
+
+TECHNOLOGIES: Flask, Jinja2, Varnish, Nginx, CDNs, SSG (Eleventy, Hugo)
+
+Strategy 1: STATIC HTML GENERATION
+  Pre-render HTML at build time. Serves 100% from CDN. No server computation.
+  Flask equivalent: Generate .html files and serve via Nginx/CDN.
+
+Strategy 2: HTML FRAGMENT CACHING
+  Cache expensive rendered sections separately. Assemble on request.
+  (See 1.10 for Flask template fragment caching)
+
+Strategy 3: EDGE-SIDE INCLUDES (ESI)
+  Varnish/CDN assembles HTML from cached fragments at the edge.
+  Marks parts of a page with special ESI tags.
+
+=== CODE EXAMPLE — ESI tags (Varnish) ===
+
+<!-- In your HTML template -->
+<html>
+<body>
+  <esi:include src="/fragments/header" />      <!-- cached 24h -->
+  <main>{{ dynamic_content }}</main>
+  <esi:include src="/fragments/footer" />      <!-- cached 24h -->
+</body>
+</html>
+
+Strategy 4: HTML CACHE-CONTROL
+  For pages that don't change per-user, set Cache-Control on HTML too:
+
+=== CODE EXAMPLE — Flask caching HTML responses ===
+
+from flask import Flask, render_template, make_response
+
+app = Flask(__name__)
+
+@app.route("/blog/<slug>")
+def blog_post(slug):
+    post = get_post(slug)   # expensive DB query
+    html = render_template("post.html", post=post)
+    response = make_response(html)
+    # public prose page — safe to cache at CDN level
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=60"
+    return response
+
+TIP (1% knowledge): Adding `Surrogate-Control` header (Varnish-specific) lets
+you set separate CDN TTLs without affecting browser TTL:
+  Surrogate-Control: max-age=86400
+  Cache-Control: public, max-age=60
+→ Browser caches 60s, Varnish/CDN caches 24h.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.5  CSS CACHING STRATEGIES
+────────────────────────────────────────────────────────────────────────────────
+What it is: Techniques for ensuring CSS is cached aggressively without users
+getting stale styles after deployments.
+
+TECHNOLOGIES: Webpack, Vite, PostCSS, Flask-Assets, gulp
+
+Strategy 1: CONTENT HASHING (FINGERPRINTING)
+  Append hash of file content to filename. If content changes, filename changes.
+  Old hash → still in CDN forever. New hash → always fresh.
+  
+  style.a3f9b2c1.css  (immutable — max-age=31536000)
+
+Strategy 2: CRITICAL CSS INLINING
+  Extract above-the-fold CSS and inline it in <head>. Eliminates render-blocking.
+  Remaining CSS loads asynchronously. First paint is instant.
+
+=== CODE EXAMPLE — Critical CSS in Flask template ===
+
+<!-- templates/base.html -->
+<head>
+  <style>
+    /* Critical CSS inlined — no network request needed */
+    {{ critical_css | safe }}
+  </style>
+  <!-- Non-critical CSS loads async — does not block render -->
+  <link rel="preload" href="/static/app.a3f9b2c1.css" as="style"
+        onload="this.onload=null;this.rel='stylesheet'">
+  <noscript>
+    <link rel="stylesheet" href="/static/app.a3f9b2c1.css">
+  </noscript>
+</head>
+
+Strategy 3: FLASK-ASSETS BUNDLE + VERSIONING
+
+=== CODE EXAMPLE — Flask-Assets with fingerprinting ===
+
+# pip install Flask-Assets webassets
+
+from flask import Flask
+from flask_assets import Environment, Bundle
+
+app = Flask(__name__)
+assets = Environment(app)
+assets.versions = "hash"          # append hash to bundle name
+assets.manifest = "file"          # persist version manifest
+
+css = Bundle(
+    "src/reset.css",
+    "src/layout.css",
+    "src/components.css",
+    filters="cssmin",
+    output="dist/app.%(version)s.css"
+)
+assets.register("css_all", css)
+
+<!-- In template -->
+{% assets "css_all" %}
+  <link rel="stylesheet" href="{{ ASSET_URL }}">
+{% endassets %}
+
+TIP (1% knowledge): Use `font-display: optional` in @font-face combined with
+FOUT handling. Pre-load critical fonts with:
+  <link rel="preload" href="/fonts/inter.woff2" as="font" crossorigin>
+This avoids FOIT (Flash of Invisible Text) AND uses browser cache efficiently.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.6  JAVASCRIPT CACHING & MEMOIZATION
+────────────────────────────────────────────────────────────────────────────────
+What it is: Client-side techniques for avoiding redundant computation and
+redundant network requests within JavaScript code.
+
+TECHNOLOGIES: JavaScript, TypeScript, React, Vue, SWR, TanStack Query, Lodash
+
+Strategy 1: MEMOIZATION
+  Cache the result of a pure function. Same inputs → return cached output.
+
+=== CODE EXAMPLE — Manual memoize ===
+
+function memoize(fn) {
+  const cache = new Map();
+  return function(...args) {
+    const key = JSON.stringify(args);
+    if (cache.has(key)) return cache.get(key);
+    const result = fn.apply(this, args);
+    cache.set(key, result);
+    return result;
+  };
+}
+
+const expensiveCalc = memoize((n) => {
+  console.log("computing...");
+  return n * n * Math.PI;
+});
+
+expensiveCalc(5);   // computed
+expensiveCalc(5);   // cache hit — instant
+
+Strategy 2: REQUEST DEDUPLICATION
+  If the same API call is made twice simultaneously (e.g., two components mount
+  at once), only make ONE HTTP request and share the result.
+
+=== CODE EXAMPLE — Request deduplication ===
+
+const inflight = new Map();
+
+async function fetchDeduped(url) {
+  if (inflight.has(url)) return inflight.get(url);   // reuse in-flight promise
+  
+  const promise = fetch(url).then(r => r.json()).finally(() => {
+    inflight.delete(url);   // clean up after completion
+  });
+  
+  inflight.set(url, promise);
+  return promise;
+}
+
+Strategy 3: SWR PATTERN (Stale-While-Revalidate)
+  Return cached data immediately, re-fetch in background, update UI silently.
+  TanStack Query and SWR library both implement this.
+
+=== CODE EXAMPLE — SWR with vanilla JS ===
+
+const cache = new Map();
+
+async function fetchSWR(url, onUpdate) {
+  const cached = cache.get(url);
+  if (cached) onUpdate(cached, false);  // instant: stale data, not refreshing
+  
+  const fresh = await fetch(url).then(r => r.json());
+  cache.set(url, fresh);
+  onUpdate(fresh, true);                 // fresh data arrived
+}
+
+// Usage
+fetchSWR("/api/stats", (data, isFresh) => {
+  renderDashboard(data);
+  if (isFresh) console.log("UI updated with fresh data");
+});
+
+Strategy 4: THROTTLING & DEBOUNCING computed caches
+  Prevent expensive recomputations triggered by fast user input.
+
+=== CODE EXAMPLE — Debounced cache ===
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// Only recompute search results 300ms after user stops typing
+const debouncedSearch = debounce(async (query) => {
+  const results = await fetchSearchResults(query);
+  renderResults(results);
+}, 300);
+
+TIP (1% knowledge): JavaScript WeakMap is ideal for memoizing functions that
+take objects as arguments. Unlike Map, WeakMap doesn't prevent garbage
+collection of the key objects — preventing memory leaks in memoization.
+
+const cache = new WeakMap();
+function memoByRef(obj) {
+  if (cache.has(obj)) return cache.get(obj);
+  const result = expensiveTransform(obj);
+  cache.set(obj, result);
+  return result;
+}
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.7  FLASK FRONTEND CACHING
+────────────────────────────────────────────────────────────────────────────────
+What it is: Flask-specific caching tools, patterns, and configurations.
+
+TECHNOLOGIES: Flask, Flask-Caching, Redis, Memcached, SimpleCache, Jinja2
+
+BACKENDS SUPPORTED BY FLASK-CACHING:
+  SimpleCache    — in-memory, single process, dev/test only
+  FileSystemCache — disk-based, survives restarts
+  RedisCache     — distributed, production-ready
+  MemcachedCache — distributed, high-throughput
+  NullCache      — disables cache (testing)
+
+=== CODE EXAMPLE — Flask-Caching setup with Redis ===
+
+# pip install Flask-Caching redis
+
+from flask import Flask
+from flask_caching import Cache
+
+app = Flask(__name__)
+app.config["CACHE_TYPE"] = "RedisCache"
+app.config["CACHE_REDIS_URL"] = "redis://localhost:6379/0"
+app.config["CACHE_DEFAULT_TIMEOUT"] = 300  # 5 minutes default TTL
+
+cache = Cache(app)
+
+=== CODE EXAMPLE — @cache.cached() — view-level caching ===
+
+@app.route("/products")
+@cache.cached(timeout=120, key_prefix="products_page")
+def products():
+    # This entire function only runs on cache miss
+    products = db.session.query(Product).all()
+    return render_template("products.html", products=products)
+
+=== CODE EXAMPLE — @cache.memoize() — function-level caching ===
+
+@cache.memoize(timeout=60)
+def get_user_profile(user_id: int):
+    # Result cached per unique user_id
+    return db.session.get(User, user_id)
+
+# Different users → different cache keys automatically
+profile_1 = get_user_profile(1)   # cache miss, stores key "get_user_profile_1"
+profile_1 = get_user_profile(1)   # cache hit
+profile_2 = get_user_profile(2)   # cache miss (different key)
+
+=== CODE EXAMPLE — Manual cache operations ===
+
+# Set with custom TTL
+cache.set("dashboard_stats", compute_stats(), timeout=30)
+
+# Get with fallback
+stats = cache.get("dashboard_stats")
+if stats is None:
+    stats = compute_stats()
+    cache.set("dashboard_stats", stats, timeout=30)
+
+# Delete (cache invalidation)
+cache.delete("dashboard_stats")
+
+# Delete multiple specific keys at once
+cache.delete_many("key_one", "key_two", "key_three")   # explicit keys only
+# NOTE: delete_many() does NOT support wildcard/glob patterns.
+# For pattern-based deletion in Redis, use SCAN + DEL directly via redis-py.
+cache.clear()                         # nuke everything — use carefully!
+
+=== CODE EXAMPLE — Per-user caching (authenticated pages) ===
+
+from flask import session
+from flask_caching import Cache
+
+@app.route("/dashboard")
+@cache.cached(
+    timeout=60,
+    key_prefix=lambda: f"dashboard_{session.get('user_id', 'anon')}"
+)
+def dashboard():
+    user_id = session["user_id"]
+    data = get_user_dashboard_data(user_id)
+    return render_template("dashboard.html", data=data)
+
+=== CODE EXAMPLE — Cache with query parameters ===
+
+from flask import request
+
+@app.route("/search")
+def search():
+    q = request.args.get("q", "")
+    page = request.args.get("page", 1, type=int)
+    cache_key = f"search_{q}_{page}"
+    
+    results = cache.get(cache_key)
+    if results is None:
+        results = perform_search(q, page)
+        cache.set(cache_key, results, timeout=120)
+    
+    return render_template("search.html", results=results)
+
+TIP (1% knowledge): Flask-Caching's @cache.cached() skips caching for
+non-GET requests and for responses with status codes != 200 automatically.
+For custom conditions, use `unless` parameter:
+  @cache.cached(timeout=300, unless=lambda: current_user.is_admin)
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.8  CDN & EDGE CACHING FOR FRONTEND
+────────────────────────────────────────────────────────────────────────────────
+What it is: Content Delivery Networks cache your assets and responses at
+servers geographically close to users (PoPs — Points of Presence).
+
+TECHNOLOGIES: Cloudflare, AWS CloudFront, Fastly, Akamai, Varnish, Nginx
+
+Key Concepts:
+  Cache HIT  — CDN serves the response without touching your origin server
+  Cache MISS — CDN fetches from your origin, then caches it
+  TTL        — Time To Live for CDN-cached objects
+  Purge/Invalidation — Remove cached object before TTL expires
+
+=== CODE EXAMPLE — Flask with Cloudflare-specific headers ===
+
+@app.route("/api/public-stats")
+def public_stats():
+    stats = compute_stats()
+    response = make_response(jsonify(stats))
+    
+    # Cloudflare respects Cache-Control + Surrogate-Control
+    response.headers["Cache-Control"] = "public, max-age=60"
+    
+    # Cloudflare Cache Tags — for granular purging (Enterprise plan)
+    response.headers["Cache-Tag"] = "stats,dashboard,global"
+    
+    return response
+
+=== CODE EXAMPLE — Cache Purging via Cloudflare API ===
+
+import requests
+
+def purge_cloudflare_cache(tags: list[str]):
+    """Purge Cloudflare cache by tag — instant CDN invalidation"""
+    r = requests.post(
+        f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/purge_cache",
+        headers={"Authorization": f"Bearer {CF_TOKEN}"},
+        json={"tags": tags}
+    )
+    r.raise_for_status()
+
+# After saving a blog post:
+def save_post(post):
+    db.save(post)
+    purge_cloudflare_cache(["posts", f"post-{post.id}"])  # targeted purge
+
+TIP (1% knowledge): Cloudflare's `stale-while-revalidate` header support means
+you can serve stale content at CDN edge while origin refreshes — zero downtime
+cache refreshes with no user-visible latency spike.
+
+TIP: AWS CloudFront honors both `s-maxage` and `max-age`. When both are present,
+`s-maxage` takes precedence (it is specific to shared caches). If neither is
+set and no Expires header is provided, CloudFront falls back to its default
+TTL of 24 hours. Best practice: set `s-maxage` explicitly for CDN control and
+`max-age` for browser control independently.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.9  FLASK ETAG & CONDITIONAL REQUEST HANDLING
+────────────────────────────────────────────────────────────────────────────────
+What it is: ETags allow browsers to ask "has this changed?" instead of
+downloading the full response. Server responds with 304 Not Modified (no body)
+if unchanged — saving bandwidth and reducing latency.
+
+TECHNOLOGIES: Flask, HTTP/1.1 conditional requests
+
+=== CODE EXAMPLE — Proper ETag implementation in Flask ===
+
+import hashlib
+from flask import request, make_response, jsonify
+
+def generate_etag(data: str) -> str:
+    return hashlib.sha256(data.encode()).hexdigest()[:16]
+
+@app.route("/api/config")
+def get_config():
+    config = fetch_config_from_db()
+    body = str(config)
+    etag = f'"{generate_etag(body)}"'
+    
+    # Check if client's version matches ours
+    if request.headers.get("If-None-Match") == etag:
+        return "", 304   # Not Modified — no body sent, bandwidth saved!
+    
+    response = make_response(jsonify(config))
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, no-cache"  # always validate
+    return response
+
+=== CODE EXAMPLE — Last-Modified conditional caching ===
+
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime, format_datetime
+
+@app.route("/api/post/<int:post_id>")
+def get_post(post_id):
+    post = Post.query.get_or_404(post_id)
+    last_modified = post.updated_at.replace(tzinfo=timezone.utc)
+    last_modified_str = format_datetime(last_modified)
+    
+    # Check If-Modified-Since header
+    ims = request.headers.get("If-Modified-Since")
+    if ims:
+        client_time = parsedate_to_datetime(ims)
+        if last_modified <= client_time:
+            return "", 304   # Not Modified
+    
+    response = make_response(jsonify(post.to_dict()))
+    response.headers["Last-Modified"] = last_modified_str
+    response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+    return response
+
+TIP (1% knowledge): ETag should change when ANY part of the response changes,
+including Content-Type and headers that affect rendering. Hash the full response
+body, not just the data model version.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.10 TEMPLATE FRAGMENT CACHING IN FLASK
+────────────────────────────────────────────────────────────────────────────────
+What it is: Cache expensive sub-sections of a Jinja2 template independently.
+The holy grail of template rendering performance.
+
+TECHNOLOGIES: Flask, Jinja2, Flask-Caching, Redis
+
+=== CODE EXAMPLE — Fragment caching with Flask-Caching ===
+
+# Define cacheable fragments as functions
+@cache.memoize(timeout=3600)
+def render_navigation():
+    categories = Category.query.all()
+    return render_template("fragments/nav.html", categories=categories)
+
+@cache.memoize(timeout=300)
+def render_featured_products():
+    products = Product.query.filter_by(featured=True).limit(8).all()
+    return render_template("fragments/featured.html", products=products)
+
+@app.route("/")
+def homepage():
+    # Only expensive_hero_data is computed fresh each request
+    hero_data = get_hero_data()               # fresh
+    nav_html = render_navigation()             # cached 1h
+    featured_html = render_featured_products() # cached 5m
+    
+    return render_template("home.html",
+        hero=hero_data,
+        nav_fragment=nav_html,         # pre-rendered HTML string
+        featured_fragment=featured_html
+    )
+
+<!-- templates/home.html -->
+{{ nav_fragment | safe }}
+<section class="hero">{{ hero.title }}</section>
+{{ featured_fragment | safe }}
+
+=== CODE EXAMPLE — Jinja2 custom cache tag (advanced) ===
+
+# Extend Jinja2 with a {% cache %} tag using an extension
+from jinja2 import nodes
+from jinja2.ext import Extension
+
+class CacheExtension(Extension):
+    tags = {"cache"}
+    
+    def parse(self, parser):
+        lineno = next(parser.stream).lineno
+        timeout = parser.parse_expression()
+        key = parser.parse_expression()
+        body = parser.parse_statements(["name:endcache"], drop_needle=True)
+        return nodes.CallBlock(
+            self.call_method("_cache_support", [timeout, key]),
+            [], [], body
+        ).set_lineno(lineno)
+    
+    def _cache_support(self, timeout, key, caller):
+        rv = cache.get(key)
+        if rv is None:
+            rv = caller()
+            cache.set(key, rv, timeout=timeout)
+        return rv
+
+app.jinja_env.add_extension(CacheExtension)
+
+<!-- Usage in template -->
+{% cache 300, "sidebar_" ~ user.id %}
+  <aside>{{ render_sidebar() }}</aside>
+{% endcache %}
+
+TIP (1% knowledge): Never cache fragments that contain CSRF tokens, session
+data, or user-specific security indicators. Fragment caching can inadvertently
+leak one user's security token to another user.
+
+
+================================================================================
+                    PART 2 — BACKEND CACHING (FASTAPI)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+2.1  IN-MEMORY CACHING (lru_cache, cachetools)
+────────────────────────────────────────────────────────────────────────────────
+What it is: Cache results directly in Python process memory. Fastest possible
+cache (nanosecond access) but lost on restart and not shared across instances.
+
+TECHNOLOGIES: Python stdlib (functools), cachetools, FastAPI
+
+=== CODE EXAMPLE — functools.lru_cache ===
+
+from functools import lru_cache
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@lru_cache(maxsize=256)
+def get_country_config(country_code: str) -> dict:
+    """Cached in memory for lifetime of process. maxsize=256 → LRU eviction"""
+    return db.fetch_country_config(country_code)
+
+@app.get("/config/{country}")
+def config(country: str):
+    return get_country_config(country.upper())
+
+=== CODE EXAMPLE — TTL cache with cachetools ===
+
+# pip install cachetools
+
+from cachetools import TTLCache, cached
+from cachetools.keys import hashkey
+import threading
+
+# Thread-safe TTL cache: max 500 items, each lives 60 seconds
+_cache = TTLCache(maxsize=500, ttl=60)
+_lock = threading.Lock()
+
+@cached(cache=_cache, key=lambda user_id: hashkey(user_id), lock=_lock)
+def get_user_permissions(user_id: int) -> list[str]:
+    return db.fetch_permissions(user_id)
+
+=== CODE EXAMPLE — Async-aware in-memory cache ===
+
+import asyncio
+from functools import wraps
+from cachetools import TTLCache
+
+_async_cache: TTLCache = TTLCache(maxsize=100, ttl=30)
+
+def async_cached(cache: TTLCache):
+    def decorator(fn):
+        @wraps(fn)
+        async def wrapper(*args, **kwargs):
+            key = (fn.__name__, args, tuple(sorted(kwargs.items())))
+            if key in cache:
+                return cache[key]
+            result = await fn(*args, **kwargs)
+            cache[key] = result
+            return result
+        return wrapper
+    return decorator
+
+@async_cached(_async_cache)
+async def fetch_rate_from_api(currency: str) -> float:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"https://api.rates.io/{currency}")
+        return r.json()["rate"]
+
+TIP (1% knowledge): lru_cache on class methods is dangerous — `self` is part
+of the cache key and holds a reference to the object, preventing garbage
+collection. Use @cache on module-level functions, or use `__hash__` carefully.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.2  REDIS — THE CORE BACKEND CACHE
+────────────────────────────────────────────────────────────────────────────────
+What it is: Redis (Remote Dictionary Server) is an in-memory data structure
+store used as a cache, message broker, and database. The industry standard
+for distributed caching.
+
+TECHNOLOGIES: Redis, redis-py, aioredis, valkey (Redis fork)
+
+Data Structures relevant to caching:
+  STRING   → simple key-value (most common)
+  HASH     → cache an object's fields separately
+  LIST     → ordered cache, queues
+  SET      → unique member cache (e.g., "which IDs are cached?")
+  SORTED SET → leaderboards, time-windowed rate limiting
+  STREAM   → event log for cache invalidation messages
+
+=== CODE EXAMPLE — async Redis with FastAPI ===
+
+# pip install redis[asyncio]
+
+import redis.asyncio as aioredis
+from fastapi import FastAPI, Depends
+import json
+
+app = FastAPI()
+
+async def get_redis():
+    r = aioredis.from_url(
+        "redis://localhost:6379",
+        encoding="utf-8",
+        decode_responses=True,
+        max_connections=20       # connection pool
+    )
+    try:
+        yield r
+    finally:
+        await r.aclose()
+
+@app.get("/products/{product_id}")
+async def get_product(product_id: int, redis = Depends(get_redis)):
+    cache_key = f"product:{product_id}"
+    
+    cached = await redis.get(cache_key)
+    if cached:
+        return json.loads(cached)    # cache hit
+    
+    product = await db.fetch_product(product_id)   # cache miss
+    await redis.setex(cache_key, 300, json.dumps(product))  # TTL = 300s
+    return product
+
+=== CODE EXAMPLE — Redis connection pool as lifespan ===
+
+from contextlib import asynccontextmanager
+import redis.asyncio as aioredis
+
+redis_pool: aioredis.Redis = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global redis_pool
+    redis_pool = aioredis.from_url("redis://localhost:6379", decode_responses=True)
+    yield
+    await redis_pool.aclose()
+
+app = FastAPI(lifespan=lifespan)
+
+TIP (1% knowledge): Use `OBJECT ENCODING key` in Redis CLI to check how Redis
+is encoding your data internally. Strings under 44 bytes use "embstr" encoding
+— which is 3x more memory-efficient than "raw". Keep cache keys short.
+
+TIP: Redis OBJECT FREQ and OBJECT IDLETIME let you analyze which keys are
+hottest and which are cold (never accessed) — invaluable for cache sizing.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.3  CACHE-ASIDE (LAZY LOADING) PATTERN
+────────────────────────────────────────────────────────────────────────────────
+What it is: The most widely used caching pattern. Application checks cache
+first. On miss, fetches from DB, stores in cache, returns. The cache is
+populated lazily — only items that are requested get cached.
+
+  Request → Cache HIT? → Return cached value
+                ↓ MISS
+           Fetch from DB → Store in Cache → Return value
+
+PROS: Only cache what's actually needed; cache failure doesn't break app
+CONS: First request always slow (cold start); stale data risk
+
+=== CODE EXAMPLE — Cache-Aside with FastAPI + Redis ===
+
+import json
+import redis.asyncio as aioredis
+from fastapi import FastAPI
+
+app = FastAPI()
+
+async def get_user(user_id: int, redis: aioredis.Redis) -> dict:
+    cache_key = f"user:{user_id}"
+    
+    # 1. Check cache
+    cached = await redis.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    
+    # 2. Cache miss — fetch from source
+    user = await db.fetch_user(user_id)
+    if user is None:
+        # Cache negative result too! (see 2.14)
+        await redis.setex(cache_key, 30, "null")
+        return None
+    
+    # 3. Populate cache
+    await redis.setex(cache_key, 600, json.dumps(user))   # 10 min TTL
+    return user
+
+=== CODE EXAMPLE — Generic cache-aside decorator ===
+
+from functools import wraps
+import json
+
+def cache_aside(key_fn, ttl: int = 300):
+    """Decorator: cache-aside pattern for any async function"""
+    def decorator(fn):
+        @wraps(fn)
+        async def wrapper(*args, redis=None, **kwargs):
+            key = key_fn(*args, **kwargs)
+            cached = await redis.get(key)
+            if cached is not None:
+                return json.loads(cached)
+            result = await fn(*args, **kwargs)
+            await redis.setex(key, ttl, json.dumps(result))
+            return result
+        return wrapper
+    return decorator
+
+@cache_aside(key_fn=lambda uid: f"profile:{uid}", ttl=600)
+async def fetch_profile(uid: int):
+    return await db.get_profile(uid)
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.4  WRITE-THROUGH PATTERN
+────────────────────────────────────────────────────────────────────────────────
+What it is: Every write to the database ALSO writes to cache synchronously.
+Cache is always consistent with DB. No stale data after writes.
+
+  Write Request → Write to DB + Write to Cache (atomic) → Respond
+
+PROS: Cache always fresh after writes; no stale reads after updates
+CONS: Write latency increases (two writes); cache polluted with unread data
+
+=== CODE EXAMPLE — Write-Through in FastAPI ===
+
+@app.put("/users/{user_id}")
+async def update_user(user_id: int, data: UserUpdate, redis=Depends(get_redis)):
+    # 1. Write to database
+    updated_user = await db.update_user(user_id, data.dict())
+    
+    # 2. IMMEDIATELY update cache (write-through)
+    cache_key = f"user:{user_id}"
+    await redis.setex(cache_key, 600, json.dumps(updated_user))
+    
+    return updated_user
+
+TIP (1% knowledge): Combine write-through with a short TTL as a safety net.
+Even if a cache update is missed due to a race, the TTL ensures eventual
+consistency. TTL is your last line of defense.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.5  WRITE-BEHIND (WRITE-BACK) PATTERN
+────────────────────────────────────────────────────────────────────────────────
+What it is: Write to cache first, acknowledge to client immediately, then write
+to DB asynchronously in the background. Highest write performance, highest risk.
+
+  Write → Cache (instant ack) → Background Worker → DB (async)
+
+PROS: Extremely fast writes; batching reduces DB load
+CONS: Data loss risk if cache crashes before DB write; complexity
+
+=== CODE EXAMPLE — Write-Behind with FastAPI + Redis Stream ===
+
+@app.post("/events")
+async def record_event(event: EventIn, redis=Depends(get_redis)):
+    event_data = event.dict()
+    
+    # 1. Write to cache immediately (user gets fast response)
+    await redis.setex(f"event:{event.id}", 3600, json.dumps(event_data))
+    
+    # 2. Queue for async DB persistence via Redis Stream
+    await redis.xadd("db:write:events", event_data)   # non-blocking
+    
+    return {"status": "queued", "id": event.id}
+
+# Separate worker process consumes the stream and writes to DB
+async def db_writer_worker(redis):
+    while True:
+        messages = await redis.xread({"db:write:events": ">"}, count=100, block=1000)
+        if messages:
+            events = [m[1] for _, m in messages[0][1]]
+            await db.bulk_insert_events(events)   # batched insert
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.6  READ-THROUGH PATTERN
+────────────────────────────────────────────────────────────────────────────────
+What it is: The cache itself is responsible for fetching from the database on a
+miss. Application ONLY talks to cache — never directly to DB. The cache library
+handles the fetch + populate logic transparently.
+
+  App → Cache → (HIT: return) | (MISS: Cache fetches from DB, stores, returns)
+
+PROS: Application code is clean — no cache logic
+CONS: Requires a cache client that supports this pattern (aiocache does)
+
+=== CODE EXAMPLE — Read-Through with aiocache ===
+
+# pip install aiocache
+
+from aiocache import Cache
+from aiocache.decorators import cached
+
+cache = Cache(Cache.REDIS, endpoint="localhost", port=6379, namespace="main")
+
+@cached(ttl=300, cache=Cache.REDIS, namespace="users")
+async def get_user(user_id: int) -> dict:
+    """aiocache makes this read-through automatically"""
+    # This only runs on cache miss — cache handles the rest
+    return await db.fetch_user(user_id)
+
+@app.get("/user/{user_id}")
+async def user_endpoint(user_id: int):
+    return await get_user(user_id)   # always goes through cache layer
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.7  FASTAPI RESPONSE CACHING MIDDLEWARE
+────────────────────────────────────────────────────────────────────────────────
+What it is: A middleware layer that caches full HTTP responses at the FastAPI
+level. All routes benefit with zero per-route cache code.
+
+TECHNOLOGIES: FastAPI, Starlette Middleware, Redis
+
+=== CODE EXAMPLE — Full response caching middleware ===
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+import redis.asyncio as aioredis
+import json
+
+class ResponseCacheMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, redis_url: str, ttl: int = 60):
+        super().__init__(app)
+        self.redis = aioredis.from_url(redis_url)
+        self.ttl = ttl
+    
+    async def dispatch(self, request: Request, call_next):
+        # Only cache GET requests
+        if request.method != "GET":
+            return await call_next(request)
+        
+        # Check for cache-skip header (for admin endpoints)
+        if request.headers.get("X-No-Cache"):
+            return await call_next(request)
+        
+        cache_key = f"response:{request.url.path}?{request.url.query}"
+        cached = await self.redis.get(cache_key)
+        
+        if cached:
+            data = json.loads(cached)
+            return Response(
+                content=data["body"],
+                status_code=data["status_code"],
+                headers={**data["headers"], "X-Cache": "HIT"}
+            )
+        
+        response = await call_next(request)
+        
+        # Only cache 200 responses
+        if response.status_code == 200:
+            body = b"".join([chunk async for chunk in response.body_iterator])
+            await self.redis.setex(cache_key, self.ttl, json.dumps({
+                "body": body.decode(),
+                "status_code": response.status_code,
+                "headers": dict(response.headers)
+            }))
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers={**dict(response.headers), "X-Cache": "MISS"}
+            )
+        
+        return response
+
+app.add_middleware(ResponseCacheMiddleware, redis_url="redis://localhost:6379")
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.8  HTTP CACHING WITH FASTAPI (ETag, Cache-Control)
+────────────────────────────────────────────────────────────────────────────────
+What it is: Setting proper HTTP caching headers in FastAPI responses to enable
+browser and CDN caching, exactly as in section 1.1/1.9 but FastAPI-native.
+
+TECHNOLOGIES: FastAPI, Starlette Response
+
+=== CODE EXAMPLE — ETag implementation in FastAPI ===
+
+import hashlib, json
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+
+@app.get("/api/catalog")
+async def get_catalog(request: Request):
+    catalog = await fetch_catalog_from_db()
+    body = json.dumps(catalog, sort_keys=True)
+    etag = f'"{hashlib.md5(body.encode()).hexdigest()}"'
+    
+    # Client has same version — return 304 with no body
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+    
+    return JSONResponse(
+        content=catalog,
+        headers={
+            "ETag": etag,
+            "Cache-Control": "public, max-age=60, stale-while-revalidate=30",
+        }
+    )
+
+=== CODE EXAMPLE — Cache-Control on different endpoint types ===
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+# Immutable public resource (versioned)
+@app.get("/api/v1/constants")
+async def constants():
+    return JSONResponse(
+        content=CONSTANTS,
+        headers={"Cache-Control": "public, max-age=86400, immutable"}
+    )
+
+# User-specific private (never CDN cached)
+@app.get("/api/me")
+async def me(current_user=Depends(get_current_user)):
+    return JSONResponse(
+        content=current_user.dict(),
+        headers={"Cache-Control": "private, max-age=60"}
+    )
+
+# Real-time data — validate always, serve stale ok
+@app.get("/api/stock/{ticker}")
+async def stock_price(ticker: str):
+    price = await get_stock_price(ticker)
+    return JSONResponse(
+        content={"ticker": ticker, "price": price},
+        headers={"Cache-Control": "public, no-cache, stale-while-revalidate=10"}
+    )
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.9  ASYNC CACHING WITH AIOCACHE
+────────────────────────────────────────────────────────────────────────────────
+What it is: aiocache is an async-native caching library for Python that
+integrates seamlessly with FastAPI's async model. Supports Redis, Memcached,
+and in-memory backends with a unified API.
+
+TECHNOLOGIES: aiocache, Redis, Memcached, FastAPI
+
+=== CODE EXAMPLE — aiocache setup and usage ===
+
+# pip install aiocache[redis] msgpack
+
+from aiocache import caches, Cache
+from aiocache.serializers import MsgPackSerializer
+
+caches.set_config({
+    "default": {
+        "cache": "aiocache.RedisCache",
+        "endpoint": "localhost",
+        "port": 6379,
+        "ttl": 300,
+        "serializer": {"class": "aiocache.serializers.MsgPackSerializer"},
+        "plugins": [
+            {"class": "aiocache.plugins.HitMissRatioPlugin"},  # metrics!
+            {"class": "aiocache.plugins.TimingPlugin"},        # timing!
+        ]
+    }
+})
+
+=== CODE EXAMPLE — aiocache multi-level decorator ===
+
+from aiocache.decorators import cached, multi_cached
+
+@cached(ttl=60, key_builder=lambda fn, *args, **kw: f"order:{args[0]}")
+async def get_order(order_id: int) -> dict:
+    return await db.fetch_order(order_id)
+
+# multi_cached: fetch multiple keys at once, batches DB calls for misses
+@multi_cached(keys_from_attr="ids", ttl=120)
+async def get_products(ids: list[int]) -> dict:
+    # Called only for IDs that were NOT in cache
+    results = await db.fetch_products_by_ids(ids)
+    return {p["id"]: p for p in results}
+
+TIP (1% knowledge): MsgPack serialization is 2-3x faster and 30-50% smaller
+than JSON for Redis caching. Use it for high-throughput services:
+  pip install aiocache[redis] msgpack
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.10 DATABASE QUERY CACHING (SQLAlchemy)
+────────────────────────────────────────────────────────────────────────────────
+What it is: Caching results of expensive database queries to avoid repeated
+heavy SQL operations.
+
+TECHNOLOGIES: SQLAlchemy, FastAPI, Redis, dogpile.cache
+
+=== CODE EXAMPLE — Query result caching with Redis ===
+
+import json
+import hashlib
+from sqlalchemy import text
+
+async def cached_query(query: str, params: dict, ttl: int = 300):
+    """Cache any SQL query result by its hash"""
+    key = "sql:" + hashlib.md5(f"{query}{params}".encode()).hexdigest()
+    
+    cached = await redis.get(key)
+    if cached:
+        return json.loads(cached)
+    
+    async with db.begin() as conn:
+        result = await conn.execute(text(query), params)
+        rows = [dict(r._mapping) for r in result.fetchall()]
+    
+    await redis.setex(key, ttl, json.dumps(rows, default=str))
+    return rows
+
+# Usage
+products = await cached_query(
+    "SELECT * FROM products WHERE category_id = :cid ORDER BY name",
+    {"cid": 5},
+    ttl=120
+)
+
+=== CODE EXAMPLE — SQLAlchemy + dogpile.cache (advanced) ===
+
+# dogpile.cache integrates at ORM query level
+# pip install dogpile.cache
+
+from dogpile.cache import make_region
+
+region = make_region().configure(
+    "dogpile.cache.redis",
+    expiration_time=300,
+    arguments={"host": "localhost", "port": 6379, "db": 0}
+)
+
+class CachingQuery(Query):
+    def get_cache_key(self):
+        return str(self.statement.compile(compile_kwargs={"literal_binds": True}))
+    
+    def cached(self, ttl=300):
+        key = self.get_cache_key()
+        result = region.get(key)
+        if result is NO_VALUE:
+            result = self.all()
+            region.set(key, result, expiration_time=ttl)
+        return result
+
+TIP (1% knowledge): Use `EXPLAIN ANALYZE` on your most-cached queries to verify
+they actually need caching. Sometimes adding a DB index is better than caching
+because caching adds consistency complexity while an index is always fresh.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.11 CACHE STAMPEDE PREVENTION (MUTEX LOCK)
+────────────────────────────────────────────────────────────────────────────────
+What it is: When a popular cache key expires, multiple requests arrive
+simultaneously, all find a cache miss, all query the database at once,
+overwhelming it. This is a cache stampede (a.k.a. dogpile effect).
+Solution: distributed lock — only ONE request rebuilds the cache; others wait.
+
+TECHNOLOGIES: Redis, asyncio.Lock, Redlock algorithm
+
+=== CODE EXAMPLE — Redis-based distributed lock for cache ===
+
+import asyncio
+import json
+import time
+
+async def get_with_lock(redis, key: str, fetch_fn, ttl: int = 300):
+    """Cache-aside with distributed lock to prevent stampede"""
+    # 1. Try fast path first
+    cached = await redis.get(key)
+    if cached and cached != "BUILDING":
+        return json.loads(cached)
+    
+    lock_key = f"lock:{key}"
+    
+    # 2. Try to acquire lock (NX = only set if not exists)
+    acquired = await redis.set(lock_key, "1", nx=True, ex=10)
+    
+    if acquired:
+        try:
+            # We have the lock — rebuild the cache
+            result = await fetch_fn()
+            await redis.setex(key, ttl, json.dumps(result))
+            return result
+        finally:
+            await redis.delete(lock_key)
+    else:
+        # Another process is rebuilding — wait and retry
+        for _ in range(20):   # wait up to 2 seconds
+            await asyncio.sleep(0.1)
+            cached = await redis.get(key)
+            if cached and cached != "BUILDING":
+                return json.loads(cached)
+        # Fallback: call db directly if wait timed out
+        return await fetch_fn()
+
+# Usage
+@app.get("/trending")
+async def trending(redis=Depends(get_redis)):
+    return await get_with_lock(
+        redis,
+        "trending:global",
+        lambda: db.compute_trending_items(),
+        ttl=60
+    )
+
+TIP (1% knowledge): Use a slightly stale sentinel instead of "BUILDING" string.
+Store the old value temporarily while rebuilding. Users get slightly stale data
+instead of waiting → better UX under stampede conditions.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.12 THUNDERING HERD PROBLEM SOLUTIONS
+────────────────────────────────────────────────────────────────────────────────
+What it is: Similar to stampede but at system startup — all caches are cold
+simultaneously. Solutions overlap with stampede prevention but focus on
+initial load patterns.
+
+Strategy 1: JITTER (randomized TTL)
+  Add random offset to TTL so keys don't all expire at the same time.
+
+=== CODE EXAMPLE — TTL with jitter ===
+
+import random
+
+def ttl_with_jitter(base_ttl: int, jitter_pct: float = 0.1) -> int:
+    """Add ±10% random jitter to base TTL"""
+    jitter = int(base_ttl * jitter_pct)
+    return base_ttl + random.randint(-jitter, jitter)
+
+await redis.setex(key, ttl_with_jitter(300), value)  # 270-330s instead of exactly 300
+
+Strategy 2: CIRCUIT BREAKER
+  If DB is failing, stop hammering it — return cached/default values.
+
+=== CODE EXAMPLE — Simple circuit breaker ===
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=30):
+        self.failures = 0
+        self.threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.opened_at = None
+        self.state = "closed"   # closed=normal, open=blocking, half-open=testing
+    
+    async def call(self, fn, *args, fallback=None, **kwargs):
+        if self.state == "open":
+            if time.time() - self.opened_at > self.recovery_timeout:
+                self.state = "half-open"
+            else:
+                return fallback   # circuit open — return fallback immediately
+        
+        try:
+            result = await fn(*args, **kwargs)
+            self.failures = 0
+            self.state = "closed"
+            return result
+        except Exception:
+            self.failures += 1
+            if self.failures >= self.threshold:
+                self.state = "open"
+                self.opened_at = time.time()
+            raise
+
+db_breaker = CircuitBreaker()
+
+@app.get("/products")
+async def products():
+    cached = await redis.get("products:all")
+    if cached:
+        return json.loads(cached)
+    
+    result = await db_breaker.call(
+        db.fetch_all_products,
+        fallback=[]   # return empty list if circuit open
+    )
+    await redis.setex("products:all", 300, json.dumps(result))
+    return result
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.13 TWO-LEVEL CACHE (L1 + L2)
+────────────────────────────────────────────────────────────────────────────────
+What it is: L1 = fast local in-process memory cache (microsecond access).
+L2 = shared distributed cache (Redis). L3 = database. Each request checks L1
+first, then L2, then DB. Dramatically reduces Redis round-trips for hot data.
+
+  L1 (local dict/LRU) → L2 (Redis) → L3 (DB)
+  Nanosecond latency    ~1ms latency   ~10ms latency
+
+=== CODE EXAMPLE — Two-level cache in FastAPI ===
+
+from cachetools import TTLCache
+
+# L1: local in-memory (very short TTL to limit staleness)
+_l1_cache: TTLCache = TTLCache(maxsize=200, ttl=5)   # 5-second TTL
+
+async def get_with_l1_l2(key: str, fetch_fn, l1_ttl=5, l2_ttl=300):
+    """Check L1 → L2 → DB with automatic population"""
+    # L1 check (nanoseconds — no network)
+    if key in _l1_cache:
+        return _l1_cache[key]
+    
+    # L2 check (Redis — ~1ms)
+    cached = await redis.get(key)
+    if cached:
+        result = json.loads(cached)
+        _l1_cache[key] = result   # backfill L1
+        return result
+    
+    # DB fetch, populate both caches
+    result = await fetch_fn()
+    await redis.setex(key, l2_ttl, json.dumps(result))
+    _l1_cache[key] = result
+    return result
+
+@app.get("/config")
+async def get_config():
+    return await get_with_l1_l2("app:config", db.load_config, l1_ttl=5, l2_ttl=600)
+
+TIP (1% knowledge): L1 cache is process-local. In a multi-instance deployment,
+each instance has its own L1. Stale data = 5 seconds max (your L1 TTL).
+This is acceptable for most data. For real-time data (prices, availability),
+set L1 TTL to 0 or skip L1 entirely.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.14 NEGATIVE CACHING & BLOOM FILTERS
+────────────────────────────────────────────────────────────────────────────────
+What it is: Cache "this thing doesn't exist" to prevent repeated DB lookups for
+missing data. Classic attack vector: bombard your API with non-existent IDs →
+each request hits DB. Negative caching + Bloom filters prevent this.
+
+TECHNOLOGIES: Redis, pybloom-live, redis-py-bloom
+
+Strategy 1: NEGATIVE CACHE (simple)
+
+=== CODE EXAMPLE — Negative caching ===
+
+CACHE_MISS_SENTINEL = "__NOT_FOUND__"
+
+async def get_user_safe(user_id: int) -> dict | None:
+    cached = await redis.get(f"user:{user_id}")
+    
+    if cached == CACHE_MISS_SENTINEL:
+        return None   # known not found — no DB hit
+    if cached:
+        return json.loads(cached)
+    
+    user = await db.fetch_user(user_id)
+    
+    if user is None:
+        # Cache the "not found" result with shorter TTL
+        await redis.setex(f"user:{user_id}", 30, CACHE_MISS_SENTINEL)
+        return None
+    
+    await redis.setex(f"user:{user_id}", 600, json.dumps(user))
+    return user
+
+Strategy 2: BLOOM FILTER (memory-efficient existence check)
+  A Bloom filter is a probabilistic data structure: zero false negatives,
+  small probability of false positives. Check if ID *might* exist before
+  hitting DB. 1 million IDs → only ~1.2 MB of Redis memory.
+
+=== CODE EXAMPLE — Bloom filter with Redis ===
+
+# Redis has native Bloom filter support via RedisBloom module
+# OR use the BF.ADD / BF.EXISTS commands
+
+async def might_exist(redis, item_id: int) -> bool:
+    """Returns False = definitely doesn't exist. True = might exist."""
+    return await redis.execute_command("BF.EXISTS", "users:bloom", str(item_id))
+
+async def add_to_bloom(redis, item_id: int):
+    await redis.execute_command("BF.ADD", "users:bloom", str(item_id))
+
+# On user creation:
+async def create_user(data: dict):
+    user = await db.create_user(data)
+    await add_to_bloom(redis, user["id"])   # add to Bloom filter
+    return user
+
+# On user lookup:
+async def get_user(user_id: int) -> dict | None:
+    if not await might_exist(redis, user_id):
+        return None   # definitely not in DB — no query needed!
+    return await db.fetch_user(user_id)
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.15 CACHE WARMING STRATEGIES
+────────────────────────────────────────────────────────────────────────────────
+What it is: Pre-populate cache before traffic hits to avoid cold-start latency.
+Essential for deployments, cache flushes, and high-traffic events.
+
+TECHNOLOGIES: FastAPI background tasks, Celery, APScheduler, Redis
+
+Strategy 1: STARTUP WARMING
+
+=== CODE EXAMPLE — Cache warming on FastAPI startup ===
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm critical caches before accepting traffic
+    print("Warming caches...")
+    await warm_product_catalog()
+    await warm_category_tree()
+    await warm_site_config()
+    print("Cache warm — ready to serve")
+    yield
+
+async def warm_product_catalog():
+    products = await db.fetch_all_products()
+    pipe = redis.pipeline()
+    for product in products:
+        pipe.setex(f"product:{product['id']}", 3600, json.dumps(product))
+    await pipe.execute()   # pipeline: single round-trip for all writes!
+
+Strategy 2: SCHEDULED PROACTIVE REFRESH (before TTL expires)
+
+=== CODE EXAMPLE — Background refresh before expiry ===
+
+# Use APScheduler to refresh caches proactively
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+scheduler = AsyncIOScheduler()
+
+@scheduler.scheduled_job("interval", seconds=240)  # refresh every 4m (TTL=5m)
+async def refresh_trending():
+    """Refresh before 5m TTL expires — users never see a cache miss"""
+    data = await db.compute_trending()
+    await redis.setex("trending:global", 300, json.dumps(data))
+
+TIP (1% knowledge): Use Redis PIPELINE for bulk cache warming — it batches all
+commands into one TCP round-trip, making warming 10-100x faster than sending
+individual SET commands.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.16 EVENT-DRIVEN CACHE INVALIDATION
+────────────────────────────────────────────────────────────────────────────────
+What it is: Rather than using TTL expiry alone, push cache invalidation via
+events when data changes. Cache stays fresh without TTL-induced staleness.
+Phil Karlton: "There are only two hard things in CS: cache invalidation and
+naming things."
+
+TECHNOLOGIES: Redis Pub/Sub, Redis Streams, FastAPI, Celery
+
+=== CODE EXAMPLE — Cache invalidation via Redis Pub/Sub ===
+
+# Publisher: when data changes, publish an invalidation event
+async def update_product(product_id: int, data: dict):
+    updated = await db.update_product(product_id, data)
+    
+    # Invalidate cache directly
+    await redis.delete(f"product:{product_id}")
+    
+    # Publish event so OTHER service instances can invalidate THEIR L1 caches
+    await redis.publish(
+        "cache:invalidate",
+        json.dumps({"type": "product", "id": product_id})
+    )
+    return updated
+
+# Subscriber: listen for invalidation events (runs in a background task)
+async def cache_invalidation_listener():
+    pubsub = redis.pubsub()
+    await pubsub.subscribe("cache:invalidate")
+    
+    async for message in pubsub.listen():
+        if message["type"] == "message":
+            event = json.loads(message["data"])
+            if event["type"] == "product":
+                # Evict from local L1 cache
+                _l1_cache.pop(f"product:{event['id']}", None)
+
+=== CODE EXAMPLE — Tag-based cache invalidation ===
+
+# Store which cache keys belong to which "tag group"
+async def cache_set_with_tags(key: str, value, ttl: int, tags: list[str]):
+    pipe = redis.pipeline()
+    pipe.setex(key, ttl, json.dumps(value))
+    for tag in tags:
+        pipe.sadd(f"tag:{tag}", key)      # add key to tag set
+        pipe.expire(f"tag:{tag}", ttl)    # tag set expires with data
+    await pipe.execute()
+
+async def invalidate_by_tag(tag: str):
+    """Delete ALL cache keys associated with a tag"""
+    keys = await redis.smembers(f"tag:{tag}")
+    if keys:
+        await redis.delete(*keys, f"tag:{tag}")
+
+# Usage: cache product with category tag
+await cache_set_with_tags(
+    f"product:{product.id}",
+    product.dict(),
+    ttl=600,
+    tags=["products", f"category:{product.category_id}"]
+)
+
+# When category changes: invalidate all products in that category instantly
+await invalidate_by_tag(f"category:{category_id}")
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.17 DISTRIBUTED CACHING & CONSISTENT HASHING
+────────────────────────────────────────────────────────────────────────────────
+What it is: When you have multiple Redis nodes (Redis Cluster), keys must be
+distributed evenly. Consistent hashing ensures adding/removing nodes only
+re-maps a small fraction of keys — not everything.
+
+TECHNOLOGIES: Redis Cluster, Redis Sentinel, Twemproxy, Envoy
+
+=== CODE EXAMPLE — Redis Cluster with redis-py ===
+
+from redis.asyncio.cluster import RedisCluster
+
+# Async mode is implicit when importing from redis.asyncio.cluster
+# There is NO async_mode parameter — the async client is selected by import path
+redis_cluster = RedisCluster(
+    host="redis-cluster-node1",
+    port=6379,
+    skip_full_coverage_check=True,
+)
+
+# redis-py handles consistent hashing internally
+await redis_cluster.set("user:123", json.dumps(user_data))
+
+=== CODE EXAMPLE — Hash tags for co-locating related keys ===
+
+# In Redis Cluster, keys with {same_tag} are guaranteed to be on the same node
+# This allows you to use pipelines and multi-key commands across related keys
+
+async def get_user_bundle(user_id: int):
+    """Fetch user profile + permissions + settings atomically"""
+    pipe = redis_cluster.pipeline()
+    
+    # {} hash tags ensure all 3 keys land on the same cluster node
+    pipe.get(f"{{user:{user_id}}}:profile")
+    pipe.get(f"{{user:{user_id}}}:perms")
+    pipe.get(f"{{user:{user_id}}}:settings")
+    
+    profile, perms, settings = await pipe.execute()
+    return {
+        "profile": json.loads(profile) if profile else None,
+        "permissions": json.loads(perms) if perms else [],
+        "settings": json.loads(settings) if settings else {}
+    }
+
+TIP (1% knowledge): Redis Cluster splits keyspace into 16384 slots. A key's
+slot = CRC16(key) % 16384. If you use hash tags incorrectly, you'll get
+CROSSSLOT errors on multi-key operations. Always use {} tags for keys that
+must be on the same node.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.18 REDIS ADVANCED PATTERNS
+────────────────────────────────────────────────────────────────────────────────
+What it is: Advanced Redis operations that unlock performance and functionality
+beyond simple GET/SET.
+
+Pattern 1: REDIS PIPELINE (batch commands)
+
+=== CODE EXAMPLE — Pipeline ===
+
+async def bulk_cache_lookup(ids: list[int]) -> dict:
+    pipe = redis.pipeline()
+    for id in ids:
+        pipe.get(f"item:{id}")
+    results = await pipe.execute()   # ONE round-trip for all GETs
+    return {ids[i]: json.loads(v) for i, v in enumerate(results) if v}
+
+Pattern 2: LUA SCRIPTS (atomic operations)
+
+=== CODE EXAMPLE — Atomic get-or-set with Lua ===
+
+GET_OR_SET_LUA = """
+local val = redis.call('GET', KEYS[1])
+if val then
+    return {1, val}
+end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return {0, ARGV[1]}
+"""
+
+async def atomic_get_or_set(key: str, value: str, ttl: int):
+    """Atomically: return existing value OR set new one. No race conditions."""
+    result = await redis.eval(GET_OR_SET_LUA, 1, key, value, str(ttl))
+    was_hit = result[0] == 1
+    return was_hit, result[1]
+
+Pattern 3: REDIS HASHES for structured objects
+
+=== CODE EXAMPLE — Hash-based object cache ===
+
+# Instead of: SET user:1 '{"name":"Alice","age":30,"email":"..."}'
+# Use: HSET user:1 name Alice age 30 email ...
+# Benefit: update individual fields without re-serializing the whole object
+
+async def update_user_field(user_id: int, field: str, value):
+    await redis.hset(f"user:{user_id}", field, json.dumps(value))
+    # No need to fetch + deserialize + re-serialize the whole object!
+
+async def get_user_field(user_id: int, field: str):
+    val = await redis.hget(f"user:{user_id}", field)
+    return json.loads(val) if val else None
+
+Pattern 4: SORTED SETS for ranked/time-windowed data
+
+=== CODE EXAMPLE — Top-N leaderboard cache ===
+
+async def update_leaderboard(user_id: int, score: float):
+    await redis.zadd("leaderboard:global", {str(user_id): score})
+    await redis.expire("leaderboard:global", 3600)
+
+async def get_top_n(n: int = 10) -> list:
+    # Returns top N user IDs with scores, highest first
+    return await redis.zrevrange("leaderboard:global", 0, n - 1, withscores=True)
+
+TIP (1% knowledge): Redis OBJECT ENCODING hint — if you store integers as
+strings in Redis, use the `int` encoding by setting them as actual integers.
+redis.set("count", 42) → internal "int" encoding, 8 bytes vs 20+ bytes.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.19 FASTAPI DEPENDENCY INJECTION FOR CACHING
+────────────────────────────────────────────────────────────────────────────────
+What it is: Use FastAPI's DI system to inject a clean cache service into any
+endpoint — keeps cache logic out of route handlers, enables easy testing.
+
+TECHNOLOGIES: FastAPI, Depends(), Redis
+
+=== CODE EXAMPLE — CacheService as injectable dependency ===
+
+from fastapi import FastAPI, Depends
+from typing import Any
+import json
+
+class CacheService:
+    def __init__(self, redis: aioredis.Redis, default_ttl: int = 300):
+        self.redis = redis
+        self.default_ttl = default_ttl
+    
+    async def get(self, key: str) -> Any | None:
+        val = await self.redis.get(key)
+        return json.loads(val) if val else None
+    
+    async def set(self, key: str, value: Any, ttl: int | None = None):
+        await self.redis.setex(key, ttl or self.default_ttl, json.dumps(value))
+    
+    async def invalidate(self, *keys: str):
+        if keys:
+            await self.redis.delete(*keys)
+    
+    async def get_or_set(self, key: str, fetch_fn, ttl: int | None = None) -> Any:
+        cached = await self.get(key)
+        if cached is not None:
+            return cached
+        result = await fetch_fn()
+        await self.set(key, result, ttl)
+        return result
+
+def get_cache_service(redis=Depends(get_redis)) -> CacheService:
+    return CacheService(redis)
+
+@app.get("/orders/{order_id}")
+async def get_order(order_id: int, cache: CacheService = Depends(get_cache_service)):
+    return await cache.get_or_set(
+        f"order:{order_id}",
+        lambda: db.fetch_order(order_id),
+        ttl=120
+    )
+
+TIP (1% knowledge): For testing, swap the real CacheService with a mock using
+FastAPI's dependency_overrides — no Redis needed in unit tests:
+
+  app.dependency_overrides[get_cache_service] = lambda: FakeCacheService()
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.20 BACKGROUND TASK CACHE REFRESH
+────────────────────────────────────────────────────────────────────────────────
+What it is: When a cache item expires or is stale, trigger a background refresh
+AFTER serving the stale response. User gets instant response; cache updates
+silently. This is the server-side implementation of Stale-While-Revalidate.
+
+TECHNOLOGIES: FastAPI BackgroundTasks, asyncio.create_task
+
+=== CODE EXAMPLE — Serve stale, refresh in background ===
+
+from fastapi import BackgroundTasks
+import time
+
+_local_cache: dict = {}   # key → (value, expires_at, is_refreshing)
+
+async def background_refresh(key: str, fetch_fn, ttl: int):
+    fresh = await fetch_fn()
+    _local_cache[key] = (fresh, time.time() + ttl, False)
+
+@app.get("/analytics/summary")
+async def analytics_summary(background_tasks: BackgroundTasks):
+    key = "analytics:summary"
+    now = time.time()
+    
+    if key in _local_cache:
+        value, expires_at, is_refreshing = _local_cache[key]
+        
+        if now < expires_at:
+            return value   # fresh — serve immediately
+        
+        if not is_refreshing:
+            # Stale — serve old data but refresh in background
+            _local_cache[key] = (value, expires_at, True)   # mark refreshing
+            background_tasks.add_task(background_refresh, key, db.compute_analytics, 120)
+        
+        return value   # serve stale while refreshing
+    
+    # Cold start — must wait for real data
+    fresh = await db.compute_analytics()
+    _local_cache[key] = (fresh, now + 120, False)
+    return fresh
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.21 STALE-WHILE-REVALIDATE (SWR) PATTERN IN FASTAPI
+────────────────────────────────────────────────────────────────────────────────
+What it is: FastAPI can signal SWR behavior to CDNs and browsers via
+Cache-Control headers, so the CDN does the revalidation — not your server.
+This offloads ALL cache refresh work to the CDN edge.
+
+TECHNOLOGIES: FastAPI, Cloudflare, AWS CloudFront
+
+=== CODE EXAMPLE — SWR via Cache-Control header ===
+
+@app.get("/api/homepage-data")
+async def homepage_data():
+    data = await db.fetch_homepage_data()
+    return JSONResponse(
+        content=data,
+        headers={
+            # CDN serves stale for 30s while revalidating with origin
+            # Origin hit only once per 30s, not per request
+            "Cache-Control": "public, max-age=60, stale-while-revalidate=30",
+            "Vary": "Accept-Encoding"
+        }
+    )
+
+=== CODE EXAMPLE — SWR with stale-if-error (resilience) ===
+
+@app.get("/api/product-feed")
+async def product_feed():
+    feed = await fetch_product_feed()
+    return JSONResponse(
+        content=feed,
+        headers={
+            # Serve fresh for 5min, then revalidate
+            # If origin is DOWN, serve stale for up to 1 hour (resilience!)
+            "Cache-Control": "public, max-age=300, stale-while-revalidate=60, stale-if-error=3600"
+        }
+    )
+
+TIP (1% knowledge): stale-if-error is the most underused Cache-Control
+directive. It acts as an automatic fallback when your origin goes down,
+serving cached responses to users instead of 500 errors. Use it.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.22 RATE LIMITING WITH REDIS (CACHE-ADJACENT)
+────────────────────────────────────────────────────────────────────────────────
+What it is: Rate limiting is not caching but uses the same Redis infrastructure
+and is essential for protecting cached endpoints from abuse.
+
+TECHNOLOGIES: Redis, slowapi (FastAPI rate limiting), Redis INCR
+
+=== CODE EXAMPLE — Fixed window rate limiter in FastAPI ===
+
+async def check_rate_limit(redis, identifier: str, limit: int, window: int) -> bool:
+    """Fixed window: max `limit` requests per `window` seconds.
+    NOTE: This is a fixed window counter — it resets hard at window boundaries.
+    For a true sliding window, use a Redis Sorted Set of request timestamps."""
+    now = int(time.time() * 1000)   # milliseconds
+    key = f"rl:{identifier}:{now // (window * 1000)}"
+    
+    pipe = redis.pipeline()
+    pipe.incr(key)
+    pipe.expire(key, window)
+    results = await pipe.execute()
+    
+    count = results[0]
+    return count <= limit   # True = allowed, False = rate limited
+
+@app.get("/api/expensive-endpoint")
+async def expensive(request: Request, redis=Depends(get_redis)):
+    ip = request.client.host
+    allowed = await check_rate_limit(redis, ip, limit=100, window=60)
+    
+    if not allowed:
+        raise HTTPException(429, "Rate limit exceeded")
+    
+    return await cached_expensive_operation()
+
+=== CODE EXAMPLE — slowapi integration (simpler) ===
+
+# pip install slowapi
+
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address, storage_uri="redis://localhost:6379")
+app.state.limiter = limiter
+
+@app.get("/api/search")
+@limiter.limit("30/minute")
+async def search(request: Request, q: str):
+    return await cached_search(q)
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.23 PROBABILISTIC EARLY EXPIRY (XFetch ALGORITHM)
+────────────────────────────────────────────────────────────────────────────────
+What it is: Instead of waiting for TTL to expire (causing a stampede), start
+refreshing the cache probabilistically before it expires. The closer to expiry,
+the higher the probability of early refresh. Invented by A. Vattani et al.
+This is the most sophisticated stampede prevention and barely 1% know it.
+
+  P(refresh) = -delta * beta * ln(rand()) > TTL - current_time
+
+TECHNOLOGIES: Redis, Python math
+
+=== CODE EXAMPLE — XFetch implementation ===
+
+import math
+import random
+import time
+import json
+
+BETA = 1.0   # higher = more aggressive pre-fetching
+
+async def xfetch_get(redis, key: str, fetch_fn, ttl: int):
+    """Get from cache with probabilistic early recompute (XFetch algorithm)"""
+    raw = await redis.get(f"xf:{key}")
+    
+    if raw:
+        data = json.loads(raw)
+        remaining_ttl = await redis.ttl(f"xf:{key}")
+        delta = data.get("_compute_time", 0.001)   # how long compute takes (seconds)
+        
+        # XFetch formula: decide if we should refresh early
+        should_refresh = -delta * BETA * math.log(random.random()) > remaining_ttl
+        
+        if not should_refresh:
+            return data["value"]   # use cached value
+        # else: fall through to recompute (probabilistic early refresh)
+    
+    # Compute fresh value (measuring time for adaptive delta)
+    start = time.time()
+    value = await fetch_fn()
+    compute_time = time.time() - start
+    
+    # Store with compute time embedded for future XFetch decisions
+    await redis.setex(f"xf:{key}", ttl, json.dumps({
+        "value": value,
+        "_compute_time": compute_time
+    }))
+    return value
+
+# Usage
+@app.get("/heavy-report")
+async def heavy_report():
+    return await xfetch_get(
+        redis,
+        "report:annual",
+        lambda: db.generate_annual_report(),   # takes ~2 seconds
+        ttl=300
+    )
+
+TIP (1% knowledge): XFetch's auto-scaling behavior means that a report taking
+2 seconds to compute has a ~37% probability of early refresh at 2 seconds
+before expiry, and ~63% at 1 second before expiry (with BETA=1). A fast
+operation (0.01s) only triggers early refresh in the last ~0.01 seconds.
+The expected early refresh window ≈ delta * BETA seconds before expiry.
+The algorithm automatically adapts to computation cost.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.24 CACHE KEY DESIGN — THE ART NOBODY TALKS ABOUT
+────────────────────────────────────────────────────────────────────────────────
+What it is: Cache key design is the most underrated topic in caching. Poor key
+design causes collisions, wasted memory, unmanageable invalidation, and bugs.
+
+TECHNOLOGIES: Redis, Memcached (applies to all caches)
+
+RULES FOR CACHE KEY DESIGN:
+
+Rule 1: USE NAMESPACES (colon-separated hierarchy)
+  user:123:profile
+  user:123:orders
+  product:456:details
+  search:category:electronics:page:2
+
+Rule 2: INCLUDE ALL DIMENSIONS THAT AFFECT THE RESULT
+  If language matters: config:en_US
+  If version matters: schema:v3:user:123
+  If tenant matters: tenant:acme:user:123
+
+Rule 3: USE CONTENT HASHING FOR COMPLEX PARAMETERS
+  # Bad: search:{"q":"laptop","min_price":500,"max_price":1500,"page":2}
+  # Good: search:a3f9b2c1  (hash of sorted query params)
+  
+  import hashlib, json
+  def make_search_key(params: dict) -> str:
+      canonical = json.dumps(params, sort_keys=True)
+      return "search:" + hashlib.md5(canonical.encode()).hexdigest()[:12]
+
+Rule 4: VERSION YOUR KEYS FOR ZERO-DOWNTIME DEPLOYS
+  # When you change data format, bump version:
+  # v1:user:123  →  v2:user:123
+  # Old instances use v1, new instances use v2 — no conflicts
+  
+  CACHE_VERSION = "v2"
+  key = f"{CACHE_VERSION}:user:{user_id}"
+
+Rule 5: KEEP KEYS SHORT (memory matters at scale)
+  # 1 million keys × 40 bytes per key = 40 MB just for keys
+  # user:123 = 8 bytes  vs  users/profile/details/123 = 26 bytes
+  # Use abbreviations: usr:123:pro  not  user:123:profile
+
+=== CODE EXAMPLE — CacheKeyBuilder class ===
+
+class CacheKey:
+    VERSION = "v2"
+    
+    @staticmethod
+    def user(user_id: int, section: str = "profile") -> str:
+        return f"{CacheKey.VERSION}:usr:{user_id}:{section}"
+    
+    @staticmethod
+    def search(params: dict) -> str:
+        slug = hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()[:10]
+        return f"{CacheKey.VERSION}:srch:{slug}"
+    
+    @staticmethod
+    def tenant_resource(tenant: str, resource: str, id: int) -> str:
+        return f"{CacheKey.VERSION}:t:{tenant}:{resource}:{id}"
+
+# Usage
+key = CacheKey.user(123, "orders")              # v2:usr:123:orders
+key = CacheKey.search({"q": "laptop", "p": 2}) # v2:srch:a3f9b2c1ab
+
+
+================================================================================
+                    QUICK REFERENCE — CHOOSING A STRATEGY
+================================================================================
+
+WHEN TO USE WHAT:
+
+Frontend:
+  Static assets (JS/CSS/images) → HTTP Cache-Control immutable + hashed names
+  HTML pages (public)           → CDN caching + stale-while-revalidate
+  HTML pages (per-user)         → Private + short max-age + ETags
+  API responses (JS client)     → SWR pattern + service worker cache
+  Expensive renders (Flask)     → Flask-Caching @cached + template fragments
+  Large local data              → IndexedDB with TTL check
+
+Backend (FastAPI):
+  Configuration / rarely changes → lru_cache + Redis, long TTL + startup warm
+  User profiles / session data   → Cache-Aside + Redis, medium TTL
+  Heavy DB aggregates            → Write-Through + background refresh
+  Real-time with resilience      → SWR headers + stale-if-error
+  High write throughput          → Write-Behind + Redis Streams
+  Many instances, hot data       → L1+L2 two-level cache
+  Expensive computation          → XFetch (probabilistic early expiry)
+  Unknown item existence         → Bloom filter + negative caching
+  Cold starts / traffic spikes   → Cache warming + circuit breaker + jitter TTL
+  Tag-based invalidation         → Redis Sets as tag index
+
+================================================================================
+                    LIBRARIES & TOOLS CHEAT SHEET
+================================================================================
+
+FRONTEND:
+  Workbox          https://developer.chrome.com/docs/workbox
+                   Service Worker caching — declarative, production-ready
+  idb              tiny IndexedDB wrapper with promise API
+  SWR              React hook: stale-while-revalidate pattern
+  TanStack Query   full async state + cache management for React/Vue/Svelte
+  Flask-Assets     asset pipeline + fingerprinting for Flask
+  Flask-Caching    view/function/fragment caching for Flask
+
+BACKEND (FastAPI):
+  redis-py         official Redis client (sync + async)
+  aioredis         async Redis (now merged into redis-py)
+  aiocache         async-native, multi-backend cache decorators
+  cachetools       TTLCache, LRUCache, etc. — in-process
+  dogpile.cache    ORM-level caching with SQLAlchemy
+  fastapi-cache2   FastAPI response cache decorator (Redis/Memcached/dict)
+  slowapi          rate limiting for FastAPI (uses Redis)
+  APScheduler      background job scheduler (cache warming)
+
+INFRASTRUCTURE:
+  Redis            primary cache backend — always choose Redis for production
+  Valkey           Redis fork (post-license change) — drop-in replacement
+  Memcached        simpler, pure-cache use cases, high throughput
+  Varnish          HTTP accelerator / reverse proxy with ESI support
+  Cloudflare       CDN + edge caching + cache tag purging
+  AWS CloudFront   CDN with s-maxage + Lambda@Edge cache logic
+  Fastly           CDN with Varnish + VCL for custom cache logic
+
+================================================================================
+  END OF GUIDE — caching_strategies.txt
+  Written for the 1% who build truly scalable systems.
+================================================================================

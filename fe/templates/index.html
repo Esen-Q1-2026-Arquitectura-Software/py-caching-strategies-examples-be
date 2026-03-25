@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Caching Showcase</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 60px auto; padding: 0 1rem; background: #f8fafc; color: #1e293b; }
+    h1   { font-size: 2rem; margin-bottom: .25rem; }
+    p    { color: #475569; margin-top: 0; }
+    button { padding: .5rem 1.2rem; background: #3b82f6; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+    button:hover { background: #2563eb; }
+    pre  { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 8px; overflow-x: auto; margin-top: 1rem; }
+    .badge { display:inline-block; padding:.2rem .6rem; border-radius:999px; font-size:.75rem; font-weight:600; }
+    .ok  { background:#dcfce7; color:#166534; }
+    .err { background:#fee2e2; color:#991b1b; }
+  </style>
+</head>
+<body>
+  <h1>Hello World &mdash; Caching Showcase</h1>
+  <p>Frontend: <strong>Flask 3</strong>&nbsp;&nbsp;|&nbsp;&nbsp;Backend: <strong>FastAPI</strong></p>
+  <p>Backend URL: <code>{{ backend_url }}</code></p>
+
+  <button onclick="callBackend()">Ping FastAPI backend</button>
+  <pre id="output">Click the button to call the FastAPI /  endpoint via httpx ...</pre>
+
+  <script>
+    async function callBackend() {
+      const pre = document.getElementById("output");
+      pre.textContent = "Loading...";
+      try {
+        const res  = await fetch("/api/hello");
+        const data = await res.json();
+        pre.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        pre.textContent = "Error: " + err.message;
+      }
+    }
+  </script>
+</body>
+</html>

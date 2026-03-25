@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.5 Write-Behind — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">
+          ← Back
+        </a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-rose-400 font-black text-lg">2.5</span>
+          <span class="text-white font-bold text-lg ml-2">Write-Behind (Write-Back) Pattern</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-rose-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-rose-300 mb-3">What is Write-Behind Caching?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        Write to the cache <strong class="text-slate-200">immediately and acknowledge the client in &lt; 1 ms</strong>.
+        The actual database write happens <em>asynchronously</em> in the background — a worker drains the
+        Redis Stream queue every 5 seconds and bulk-inserts into SQLite. This is the fastest possible
+        write acknowledgement at the cost of a brief data-loss window if both Redis and the app crash
+        simultaneously before a flush.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-rose-400 font-semibold">Write ack</div>
+          <div class="text-slate-300">Client gets response in &lt; 1 ms — before DB write.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-rose-400 font-semibold">Queue</div>
+          <div class="text-slate-300">Redis Stream holds pending events until flushed.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-rose-400 font-semibold">Flush interval</div>
+          <div class="text-slate-300">Background worker runs every 5 s, batch-inserts all pending.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-amber-400 font-semibold">Risk</div>
+          <div class="text-slate-300">Data in stream but not yet DB can be lost on crash.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pattern diagram ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-rose-950 to-slate-900 border-b border-rose-900 px-5 py-4">
+        <h3 class="text-rose-300 font-bold text-base">Write-Behind Flow (Redis Stream)</h3>
+        <p class="text-slate-400 text-xs mt-1">
+          Stream key: <code class="text-slate-200 font-mono">wb:events</code> — Flush every 5 s — Batch size: 50
+        </p>
+      </div>
+      <div class="p-5">
+        <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono leading-loose">
+          <div class="mb-3">
+            <span class="text-rose-300 font-bold">POST /event</span>
+            <span class="text-slate-500 ml-2">(client request — completes in &lt; 1 ms)</span>
+          </div>
+          <div class="space-y-1 text-slate-400 pl-4 border-l-2 border-rose-800">
+            <div><span class="text-rose-400">1.</span> <span class="text-slate-300">XADD wb:events * event_type click user_id 3 ...</span> <span class="text-emerald-500 ml-2">← Redis Stream</span></div>
+            <div><span class="text-rose-400">2.</span> <span class="text-slate-300">return 202 Accepted  ← DB NOT yet written</span></div>
+          </div>
+          <div class="mt-4 mb-3">
+            <span class="text-rose-300 font-bold">Background Worker</span>
+            <span class="text-slate-500 ml-2">(runs every 5 s)</span>
+          </div>
+          <div class="space-y-1 text-slate-400 pl-4 border-l-2 border-rose-800">
+            <div><span class="text-rose-400">3.</span> <span class="text-slate-300">XRANGE wb:events - +</span> <span class="text-slate-500 ml-2">← drain all pending</span></div>
+            <div><span class="text-rose-400">4.</span> <span class="text-slate-300">INSERT INTO event_logs VALUES ... (batch)</span> <span class="text-sky-400 ml-2">← SQLAlchemy bulk</span></div>
+            <div><span class="text-rose-400">5.</span> <span class="text-slate-300">DEL wb:events</span> <span class="text-slate-500 ml-2">← stream cleared</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Demo ───────────────────────────────────────────────────────────── -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      <!-- ── Submit Event ──────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-rose-950 to-slate-900 border-b border-rose-900 px-5 py-4">
+          <h3 class="text-rose-300 font-bold">Submit Event (POST) — Write-Behind</h3>
+          <p class="text-slate-400 text-xs mt-1">
+            Writes to Redis Stream, acks client instantly. Watch ack_latency_ms &lt; 1 ms.
+          </p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="space-y-3">
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">Event Type</label>
+              <select id="event-type" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-rose-500">
+                <option value="page_view">page_view</option>
+                <option value="click">click</option>
+                <option value="purchase">purchase</option>
+                <option value="login">login</option>
+                <option value="logout">logout</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">User ID</label>
+              <select id="event-user-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-rose-500">
+                <option value="1">1 — Alice</option>
+                <option value="2">2 — Bob</option>
+                <option value="3">3 — Carol</option>
+                <option value="4">4 — David</option>
+                <option value="5">5 — Eve</option>
+              </select>
+            </div>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="submitEvent()" class="px-4 py-2 bg-rose-700 hover:bg-rose-600 rounded-lg text-sm font-semibold transition-colors">
+              Submit Event
+            </button>
+            <button onclick="submitBurst()" class="px-4 py-2 bg-rose-900 hover:bg-rose-800 rounded-lg text-sm font-semibold transition-colors">
+              Burst × 5
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            Each submit returns 202 Accepted with <code class="font-mono text-slate-400">db_written: false</code>. The queue fills up — then <strong class="text-rose-300">force flush</strong> to see the DB update.
+          </p>
+          <div id="submit-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Queue & Stats ─────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-rose-950 to-slate-900 border-b border-rose-900 px-5 py-4">
+          <h3 class="text-rose-300 font-bold">Queue Status &amp; Stats</h3>
+          <p class="text-slate-400 text-xs mt-1">
+            Pending = in Redis Stream (not yet DB). Flushed = in SQLite.
+          </p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="viewEvents()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-semibold transition-colors">
+              View Events
+            </button>
+            <button onclick="viewStats()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-semibold transition-colors">
+              Stats
+            </button>
+            <button onclick="forceFlush()" class="px-4 py-2 bg-amber-700 hover:bg-amber-600 rounded-lg text-sm font-semibold transition-colors">
+              Force Flush
+            </button>
+            <button onclick="clearAll()" class="px-4 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-semibold transition-colors">
+              Clear All
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            <strong class="text-amber-300">Workflow:</strong>
+            Submit several events → check View Events (not in DB yet) →
+            Force Flush → check View Events again (now flushed to DB).
+          </p>
+          <div id="stats-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /grid -->
+
+    <!-- ── Compare: Write-Through vs Write-Behind ─────────────────────────── -->
+    <section>
+      <h2 class="text-base font-bold text-slate-200 mb-4">Write-Behind vs Write-Through</h2>
+      <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <table class="w-full text-sm text-left">
+          <thead class="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
+            <tr>
+              <th class="px-4 py-3">Aspect</th>
+              <th class="px-4 py-3">Write-Behind (2.5)</th>
+              <th class="px-4 py-3">Write-Through (2.4)</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 bg-slate-900 text-xs text-slate-400">
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Write ack</td>
+              <td class="px-4 py-3 text-emerald-400">&lt; 1 ms (queued, not persisted)</td>
+              <td class="px-4 py-3 text-amber-400">~5–20 ms (DB + cache written)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">DB write timing</td>
+              <td class="px-4 py-3 text-amber-400">Deferred (batch, every 5 s)</td>
+              <td class="px-4 py-3 text-emerald-400">Synchronous (in same request)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">DB load</td>
+              <td class="px-4 py-3 text-emerald-400">Low (bulk batch inserts)</td>
+              <td class="px-4 py-3 text-amber-400">1 write per request</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Data safety</td>
+              <td class="px-4 py-3 text-amber-400">Risk: unflushed data lost on crash</td>
+              <td class="px-4 py-3 text-emerald-400">Safe: DB written synchronously</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Best for</td>
+              <td class="px-4 py-3">High-throughput events, analytics, audit logs</td>
+              <td class="px-4 py-3">User data, settings — consistency is required</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  // ── Utilities ────────────────────────────────────────────────────────────────
+  function loading(id) {
+    document.getElementById(id).innerHTML = '<span class="spinner text-slate-400">↻</span> loading…';
+  }
+
+  async function call(resultId, url, method = 'GET', body = null) {
+    loading(resultId);
+    try {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      const r = await fetch(url, opts);
+      const json = await r.json();
+      const el = document.getElementById(resultId);
+      el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in';
+      el.innerHTML = `<pre class="${r.ok ? 'text-slate-300' : 'text-red-400'} leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+    } catch (e) {
+      document.getElementById(resultId).innerHTML = `<span class="text-red-400">${e.message}</span>`;
+    }
+  }
+
+  async function callQueued(resultId, url, body) {
+    loading(resultId);
+    try {
+      const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      const r = await fetch(url, opts);
+      const json = await r.json();
+      const el = document.getElementById(resultId);
+      el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in space-y-2';
+      if (r.ok) {
+        const ack = json.ack_latency_ms;
+        const badgeAck = `<span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-rose-900 text-rose-300">⚡ QUEUED — ${ack} ms</span>`;
+        const badgeDb = `<span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">DB NOT YET WRITTEN</span>`;
+        el.innerHTML = `<div class="flex flex-wrap gap-2">${badgeAck}${badgeDb}</div>
+          <pre class="text-slate-300 leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+      } else {
+        el.innerHTML = `<pre class="text-red-400 leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+      }
+    } catch (e) {
+      document.getElementById(resultId).innerHTML = `<span class="text-red-400">${e.message}</span>`;
+    }
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+  function submitEvent() {
+    const event_type = document.getElementById('event-type').value;
+    const user_id = parseInt(document.getElementById('event-user-id').value);
+    callQueued('submit-result', '/api/write-behind/event', { event_type, user_id });
+  }
+
+  async function submitBurst() {
+    const event_type = document.getElementById('event-type').value;
+    const user_id = parseInt(document.getElementById('event-user-id').value);
+    const el = document.getElementById('submit-result');
+    el.className = 'rounded-xl bg-slate-800 p-4 text-xs';
+    el.innerHTML = '<span class="spinner text-rose-400">↻</span> Sending 5 events…';
+    const results = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch('/api/write-behind/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_type, user_id }),
+      });
+      const j = await r.json();
+      results.push({ id: j.message_id, ack_ms: j.ack_latency_ms, queue: j.queue_depth });
+    }
+    el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in space-y-1';
+    el.innerHTML = `<div class="text-rose-300 font-bold mb-2">5 events queued</div>` +
+      results.map(r => `<div class="text-slate-400">id: <span class="text-slate-200 font-mono">${r.id}</span>  ack: <span class="text-emerald-400 font-mono">${r.ack_ms} ms</span>  queue: <span class="text-amber-400">${r.queue}</span></div>`).join('');
+  }
+
+  function viewEvents() {
+    call('stats-result', '/api/write-behind/events');
+  }
+
+  function viewStats() {
+    call('stats-result', '/api/write-behind/stats');
+  }
+
+  function forceFlush() {
+    call('stats-result', '/api/write-behind/flush', 'POST');
+  }
+
+  function clearAll() {
+    call('stats-result', '/api/write-behind/clear', 'DELETE');
+  }
+
+  // ── Health check ─────────────────────────────────────────────────────────────
+  (async function checkHealth() {
+    const badge = document.getElementById('health-badge');
+    try {
+      const r = await fetch('/api/health');
+      const json = await r.json();
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono ' + (r.ok ? 'bg-emerald-900 text-emerald-300' : 'bg-red-900 text-red-400');
+      badge.textContent = r.ok ? `backend ok · redis ${json.redis ? 'ok' : 'offline'}` : 'backend error';
+    } catch {
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono bg-red-900 text-red-400';
+      badge.textContent = 'backend unreachable';
+    }
+  })();
+  </script>
+
+</body>
+</html>

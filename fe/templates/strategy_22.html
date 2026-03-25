@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.2 Redis Cache — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">
+          ← Back
+        </a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-emerald-400 font-black text-lg">2.2</span>
+          <span class="text-white font-bold text-lg ml-2">Redis — Core Backend Cache</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-emerald-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-emerald-300 mb-3">What is Redis Caching?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        Redis is an in-memory data store that runs as a separate process (or cluster). Unlike in-process
+        caches, it is <strong class="text-slate-200">shared across all workers and application instances</strong>,
+        survives app restarts, and supports rich atomic operations. The standard pattern for FastAPI:
+        initialise a connection pool once in <code class="text-emerald-300">lifespan()</code>, then
+        <code class="text-emerald-300">GET</code> on every read and <code class="text-emerald-300">SETEX</code>
+        (set + TTL) on every cache-population event.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-emerald-400 font-semibold">Scope</div>
+          <div class="text-slate-300">All workers, all instances — fully shared.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-emerald-400 font-semibold">Survival</div>
+          <div class="text-slate-300">Persists across app restarts (until TTL or eviction).</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-emerald-400 font-semibold">TTL</div>
+          <div class="text-slate-300">Set atomically with SETEX. Entries expire automatically.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-emerald-400 font-semibold">Best for</div>
+          <div class="text-slate-300">Product catalogues, API responses, session tokens, computed results.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pattern diagram ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-emerald-950 to-slate-900 border-b border-emerald-900 px-5 py-4">
+        <h3 class="text-emerald-300 font-bold text-base">Cache-Aside Read Pattern (SETEX / GET)</h3>
+        <p class="text-slate-400 text-xs mt-1">
+          Key: <code class="text-slate-200 font-mono">product:{id}</code> — TTL: 300 s — Connection pool: max_connections=20
+        </p>
+      </div>
+      <div class="p-5 space-y-4">
+
+        <!-- Flow diagram -->
+        <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono leading-loose">
+          <div class="flex flex-wrap items-center gap-2 text-slate-400">
+            <span class="text-emerald-300 font-bold">GET</span>
+            <span>product:{id}</span>
+          </div>
+          <div class="mt-2 space-y-1 pl-4 border-l-2 border-slate-700">
+            <div class="flex items-center gap-2">
+              <span class="text-emerald-400 font-bold w-4">✓</span>
+              <span class="text-emerald-300">HIT</span>
+              <span class="text-slate-500">→</span>
+              <span>return JSON blob</span>
+              <span class="text-slate-500 ml-2">~1 ms — DB not touched</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="text-red-400 font-bold w-4">✗</span>
+              <div>
+                <span class="text-red-400">MISS</span>
+                <span class="text-slate-500"> → </span>
+                <span>SELECT from DB</span>
+                <span class="text-slate-500 ml-2">~200 ms</span>
+                <br/>
+                <span class="pl-10 text-slate-500">→ </span>
+                <span class="text-emerald-300">SETEX</span>
+                <span> product:{id} 300 &lt;json&gt;</span>
+                <span class="text-slate-500 ml-2">one call, atomic set+TTL</span>
+                <br/>
+                <span class="pl-10 text-slate-500">→ </span>
+                <span>return data</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Demo controls -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="space-y-4">
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">Product</label>
+              <select id="redis-product" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-emerald-600">
+                <option value="1">1 — Laptop Pro 15 ($1,299)</option>
+                <option value="2">2 — Wireless Mouse ($29)</option>
+                <option value="3">3 — Standing Desk ($449)</option>
+                <option value="4">4 — Coffee Maker ($89)</option>
+                <option value="5">5 — Notebook Pack ($12)</option>
+              </select>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="fetchRedis()" class="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                Fetch Product
+              </button>
+              <button onclick="statsRedis()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                Stats
+              </button>
+              <button onclick="clearRedis()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                Clear
+              </button>
+            </div>
+            <p class="text-slate-500 text-xs">
+              💡 Fetch a product twice. First call: ~200 ms (DB). Second call: &lt;2 ms (Redis).
+              Click <strong class="text-slate-300">Clear</strong> to evict all keys and repeat the cycle.
+            </p>
+          </div>
+
+          <!-- Explanation panel -->
+          <div class="bg-slate-800 rounded-xl p-4 text-xs space-y-3">
+            <div class="text-slate-200 font-semibold">Code walkthrough</div>
+            <div class="font-mono text-slate-400 leading-relaxed space-y-1">
+              <div><span class="text-emerald-300">cached</span> = await redis.get(key)</div>
+              <div><span class="text-sky-300">if</span> cached:</div>
+              <div class="pl-4">return json.loads(cached)  <span class="text-slate-500"># HIT</span></div>
+              <div><span class="text-slate-500"># miss path</span></div>
+              <div>row = await db.get(Product, id)</div>
+              <div>await redis.<span class="text-emerald-300">setex</span>(key, 300, json.dumps(row))</div>
+              <div>return row  <span class="text-slate-500"># MISS → now cached</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="redis-result" class="hidden fade-in"></div>
+      </div>
+    </section>
+
+    <!-- ── Redis vs In-Memory comparison ─────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+      <h3 class="text-sm font-bold text-slate-300 mb-4">Redis vs In-Memory — Full Comparison</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs text-left">
+          <thead class="text-slate-500 uppercase tracking-wide border-b border-slate-800">
+            <tr>
+              <th class="pb-2 pr-4">Feature</th>
+              <th class="pb-2 pr-4 text-violet-400">lru_cache / TTLCache</th>
+              <th class="pb-2 text-emerald-400">Redis</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 text-slate-400">
+            <tr><td class="py-2.5 pr-4">HIT latency</td><td class="pr-4 text-violet-300">~0 ms (RAM ptr + dict lookup)</td><td class="text-emerald-300">~0.5–2 ms (TCP + encode/decode)</td></tr>
+            <tr><td class="py-2.5 pr-4">Shared between workers</td><td class="pr-4 text-red-400">No — each worker has own copy</td><td class="text-emerald-400">Yes — single source of truth</td></tr>
+            <tr><td class="py-2.5 pr-4">Survives restart</td><td class="pr-4 text-red-400">No</td><td class="text-emerald-400">Yes (until TTL / eviction)</td></tr>
+            <tr><td class="py-2.5 pr-4">Max storage</td><td class="pr-4">Limited by app process RAM</td><td class="text-emerald-300">Dedicated instance (GBs)</td></tr>
+            <tr><td class="py-2.5 pr-4">Atomic TTL</td><td class="pr-4">TTLCache only, process-local</td><td class="text-emerald-300">SETEX — guaranteed atomic</td></tr>
+            <tr><td class="py-2.5 pr-4">Horizontal scaling</td><td class="pr-4 text-red-400">Cache pollution across pods</td><td class="text-emerald-400">Transparent — all pods share one cache</td></tr>
+            <tr><td class="py-2.5 pr-4">Extra dependency</td><td class="pr-4 text-emerald-400">No — built into Python</td><td class="text-amber-400">Yes — Redis server required</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  function badgeHit(hit) {
+    return hit
+      ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300 text-xs font-bold">● CACHE HIT</span>'
+      : '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-900 text-red-400 text-xs font-bold">○ CACHE MISS</span>';
+  }
+
+  function badgeLatency(ms) {
+    const cls = ms < 10 ? 'text-emerald-400' : ms < 80 ? 'text-amber-400' : 'text-red-400';
+    return `<span class="${cls} font-bold font-mono">${ms.toFixed(1)} ms</span>`;
+  }
+
+  function sourceTag(src) {
+    const map = {
+      redis:          'bg-emerald-900 text-emerald-300',
+      simulated_db:   'bg-slate-700 text-slate-300',
+      sqlalchemy_db:  'bg-rose-900 text-rose-300',
+    };
+    const cls = map[src] || 'bg-slate-700 text-slate-300';
+    return `<span class="px-2 py-0.5 rounded-full text-xs font-semibold ${cls}">${src}</span>`;
+  }
+
+  function renderResult(id, json, isError) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+    if (isError) {
+      const msg = json.detail || json.error || JSON.stringify(json);
+      el.innerHTML = `<div class="bg-red-950 border border-red-800 rounded-xl p-3 text-red-400 text-xs"><pre>${typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg}</pre></div>`;
+      return;
+    }
+    const topRow = 'cache_hit' in json
+      ? `<div class="flex flex-wrap items-center gap-3 mb-3">
+           ${badgeHit(json.cache_hit)}
+           <span class="text-slate-500 text-xs">latency:</span>${badgeLatency(json.latency_ms)}
+           <span class="text-slate-500 text-xs">source:</span>${sourceTag(json.source)}
+           ${json.ttl_remaining_seconds != null ? `<span class="text-slate-500 text-xs">TTL:</span><span class="text-slate-300 font-mono text-xs">${json.ttl_remaining_seconds}s</span>` : ''}
+         </div>` : '';
+    el.innerHTML = `
+      <div class="bg-slate-800 rounded-xl p-4 text-xs">
+        ${topRow}
+        <pre class="text-slate-300 leading-relaxed overflow-auto max-h-64">${JSON.stringify(json, null, 2)}</pre>
+      </div>`;
+    el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+  }
+
+  function loading(id) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+    el.innerHTML = `<div class="bg-slate-800 rounded-xl p-4 text-slate-500 text-xs flex items-center gap-2"><span class="spinner">⬡</span> Fetching…</div>`;
+  }
+
+  async function call(id, url, method = 'GET') {
+    loading(id);
+    try {
+      const r = await fetch(url, { method });
+      renderResult(id, await r.json(), !r.ok);
+    } catch (e) {
+      renderResult(id, { error: e.message }, true);
+    }
+  }
+
+  function fetchRedis() { call('redis-result', `/api/redis/product/${document.getElementById('redis-product').value}`); }
+  function statsRedis() { call('redis-result', '/api/redis/stats'); }
+  function clearRedis() { call('redis-result', '/api/redis/cache', 'DELETE'); }
+
+  (async function checkHealth() {
+    const badge = document.getElementById('health-badge');
+    try {
+      const r = await fetch('/api/health');
+      const json = await r.json();
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono ' + (r.ok ? 'bg-emerald-900 text-emerald-300' : 'bg-red-900 text-red-400');
+      badge.textContent = r.ok ? `backend ok · redis ${json.redis ? 'ok' : 'offline'}` : 'backend error';
+    } catch {
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono bg-red-900 text-red-400';
+      badge.textContent = 'backend unreachable';
+    }
+  })();
+  </script>
+
+</body>
+</html>

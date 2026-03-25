@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.3 Cache-Aside Pattern — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm">← Back</a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-sky-400 font-black text-lg">2.3</span>
+          <span class="text-white font-bold text-lg ml-2">Cache-Aside (Lazy Loading) Pattern</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-sky-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-sky-300 mb-3">What is Cache-Aside (Lazy Loading)?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        The application code itself is responsible for loading data into the cache. On a read:
+        check Redis first. On a miss, query the database (real SQLAlchemy ORM — not a fake dict),
+        store the result in Redis, then return it. Data enters the cache <em>lazily</em> — only
+        when it is first requested.
+      </p>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        This demo adds one important upgrade over the basic Redis pattern: <strong class="text-sky-300">negative caching</strong>.
+        When an ID does not exist in the database, a <code class="text-orange-300">null</code> sentinel is
+        stored in Redis with a <em>short</em> 15-second TTL. Repetitive 404 lookups then
+        never reach the database at all.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3">
+          <div class="text-sky-400 font-semibold mb-1">Positive TTL</div>
+          <div class="text-slate-300">120 seconds. Real orders cached after first DB read.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3">
+          <div class="text-orange-400 font-semibold mb-1">Negative TTL</div>
+          <div class="text-slate-300">15 seconds. <code>null</code> stored for non-existent IDs. Short TTL = heals quickly.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3">
+          <div class="text-sky-400 font-semibold mb-1">Data source</div>
+          <div class="text-slate-300">Real SQLAlchemy ORM <code>session.get(Order, id)</code> on every miss.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Full flow diagram ─────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-sky-950 to-slate-900 border-b border-sky-900 px-5 py-4">
+        <h3 class="text-sky-300 font-bold text-base">Complete Flow Diagram</h3>
+        <p class="text-slate-400 text-xs mt-1">
+          Cache key: <code class="text-slate-200 font-mono">order:{id}</code>  &nbsp;|&nbsp;
+          DB table: <code class="text-slate-200 font-mono">orders</code> via SQLAlchemy async ORM
+        </p>
+      </div>
+      <div class="p-5 space-y-5">
+
+        <div class="bg-slate-800 rounded-xl p-5 text-xs font-mono leading-loose">
+          <div class="text-sky-300 font-bold mb-1">GET order:{id}</div>
+          <div class="pl-4 space-y-1 border-l-2 border-slate-700">
+
+            <!-- Positive hit -->
+            <div class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold mt-0.5">1.</span>
+              <div>
+                <span class="text-emerald-300 font-bold">HIT (positive)</span>
+                <span class="text-slate-500"> — Redis returns JSON blob</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ latency ~1 ms &nbsp;|&nbsp; DB not touched &nbsp;|&nbsp; TTL decrement shown</span>
+              </div>
+            </div>
+
+            <!-- Negative hit -->
+            <div class="flex items-start gap-2">
+              <span class="text-orange-400 font-bold mt-0.5">2.</span>
+              <div>
+                <span class="text-orange-300 font-bold">HIT (negative)</span>
+                <span class="text-slate-500"> — Redis returns <code>"null"</code> sentinel</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ 404 returned immediately &nbsp;|&nbsp; DB NOT touched &nbsp;|&nbsp; latency ~1 ms</span>
+              </div>
+            </div>
+
+            <!-- Miss: found -->
+            <div class="flex items-start gap-2">
+              <span class="text-red-400 font-bold mt-0.5">3a.</span>
+              <div>
+                <span class="text-red-400 font-bold">MISS</span> + order exists
+                <span class="text-slate-500"> — Redis has no entry</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ <span class="text-rose-300">session.get(Order, id)</span> via SQLAlchemy &nbsp;~180 ms</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ <span class="text-sky-300">SETEX order:{id} 120</span> &lt;json&gt; &nbsp;(stored in Redis)</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ return order data</span>
+              </div>
+            </div>
+
+            <!-- Miss: not found -->
+            <div class="flex items-start gap-2">
+              <span class="text-red-400 font-bold mt-0.5">3b.</span>
+              <div>
+                <span class="text-red-400 font-bold">MISS</span> + order NOT found
+                <span class="text-slate-500"> — Redis has no entry</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ <span class="text-rose-300">session.get(Order, id)</span> returns None &nbsp;~180 ms</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ <span class="text-orange-300">SETEX order:{id} 15</span> <code>"null"</code> &nbsp;(negative sentinel, short TTL)</span>
+                <br/>
+                <span class="text-slate-500 pl-4">→ return 404 &nbsp;|&nbsp; next call hits Redis, NOT DB (step 2)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Demo controls -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="space-y-4">
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-sm w-20">Order ID</label>
+              <select id="ca-order" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-sky-600">
+                <option value="1">1 — Alice Johnson · delivered · $299.99</option>
+                <option value="2">2 — Bob Smith · processing · $42.98</option>
+                <option value="3">3 — Carol White · pending · $1,449.98</option>
+                <option value="4">4 — David Lee · shipped · $89.99</option>
+                <option value="5">5 — Eve Martinez · delivered · $25.98</option>
+                <option value="99">99 — Non-existent → negative cache demo ⚡</option>
+              </select>
+            </div>
+            <div class="flex gap-2">
+              <button onclick="fetchCacheAside()" class="flex-1 bg-sky-700 hover:bg-sky-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                Fetch Order
+              </button>
+              <button onclick="statsCacheAside()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+                Stats
+              </button>
+              <button onclick="clearCacheAside()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+                Clear
+              </button>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-4 text-xs text-slate-400 space-y-2">
+              <div class="text-slate-200 font-semibold">Try these steps:</div>
+              <div class="flex gap-2"><span class="text-sky-400">①</span> Fetch order 1 → MISS (~180 ms, SQLAlchemy query)</div>
+              <div class="flex gap-2"><span class="text-sky-400">②</span> Fetch order 1 again → HIT (&lt;2 ms, Redis)</div>
+              <div class="flex gap-2"><span class="text-sky-400">③</span> Fetch order 99 → MISS then → 404 (negative cache written)</div>
+              <div class="flex gap-2"><span class="text-sky-400">④</span> Fetch order 99 again → HIT + 404 (&lt;2 ms, DB NOT touched)</div>
+              <div class="flex gap-2"><span class="text-sky-400">⑤</span> Clear → all entries evicted → repeat cycle</div>
+            </div>
+          </div>
+
+          <!-- Code walkthrough -->
+          <div class="bg-slate-800 rounded-xl p-4 text-xs space-y-2">
+            <div class="text-slate-200 font-semibold mb-2">Actual backend code (simplified)</div>
+            <div class="font-mono text-slate-400 leading-relaxed">
+              <span class="text-slate-500"># check cache</span><br/>
+              raw = await redis.<span class="text-sky-300">get</span>(f"order:{id}")<br/>
+              <br/>
+              <span class="text-sky-300">if</span> raw <span class="text-sky-300">is not None</span>:<br/>
+              <span class="pl-4">val = json.loads(raw)</span><br/>
+              <span class="pl-4 text-sky-300">if</span> val <span class="text-sky-300">is None</span>:<br/>
+              <span class="pl-8">raise</span> <span class="text-rose-300">404</span>  <span class="text-slate-500"># negative hit</span><br/>
+              <span class="pl-4">return val  </span><span class="text-slate-500"># positive hit</span><br/>
+              <br/>
+              <span class="text-slate-500"># miss — hit the DB</span><br/>
+              order = await db.<span class="text-rose-300">get</span>(Order, id)<br/>
+              <span class="text-sky-300">if</span> order:<br/>
+              <span class="pl-4">await redis.<span class="text-sky-300">setex</span>(key, <span class="text-amber-300">120</span>, dump(order))</span><br/>
+              <span class="pl-4">return order</span><br/>
+              <span class="text-sky-300">else</span>:<br/>
+              <span class="pl-4">await redis.<span class="text-orange-300">setex</span>(key, <span class="text-amber-300">15</span>, <span class="text-orange-300">"null"</span>)</span><br/>
+              <span class="pl-4">raise</span> <span class="text-rose-300">404</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="ca-result" class="hidden fade-in"></div>
+      </div>
+    </section>
+
+    <!-- ── Why use Cache-Aside ─────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+      <h3 class="text-sm font-bold text-slate-300 mb-4">Cache-Aside vs Basic Redis — Key Differences</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs text-left">
+          <thead class="text-slate-500 uppercase tracking-wide border-b border-slate-800">
+            <tr>
+              <th class="pb-2 pr-4">Aspect</th>
+              <th class="pb-2 pr-4 text-emerald-400">2.2 Basic Redis</th>
+              <th class="pb-2 text-sky-400">2.3 Cache-Aside</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 text-slate-400">
+            <tr><td class="py-2.5 pr-4">Data source on miss</td><td class="pr-4">In-memory Python dict (fake)</td><td class="text-sky-300">Real SQLAlchemy ORM SELECT</td></tr>
+            <tr><td class="py-2.5 pr-4">Negative caching</td><td class="pr-4 text-red-400">No — 404s always hit DB</td><td class="text-sky-300">Yes — null stored 15 s</td></tr>
+            <tr><td class="py-2.5 pr-4">Cache population style</td><td class="pr-4">Eager (all data pre-loaded)</td><td class="text-sky-300">Lazy (only accessed items cached)</td></tr>
+            <tr><td class="py-2.5 pr-4">TTL strategy</td><td class="pr-4">Single TTL for all entries</td><td class="text-sky-300">Two TTLs: 120 s positive, 15 s negative</td></tr>
+            <tr><td class="py-2.5 pr-4">Stale data risk</td><td class="pr-4">If someone updates DB directly</td><td class="text-amber-400">Same — explicit invalidation required on write</td></tr>
+            <tr><td class="py-2.5 pr-4">Memory efficiency</td><td class="pr-4">All products always in cache</td><td class="text-sky-300">Only hot objects are cached</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  function badgeHit(hit, isNegative) {
+    if (hit && isNegative)
+      return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-900 text-orange-300 text-xs font-bold">● NEGATIVE HIT (null sentinel)</span>';
+    return hit
+      ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300 text-xs font-bold">● CACHE HIT</span>'
+      : '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-900 text-red-400 text-xs font-bold">○ CACHE MISS</span>';
+  }
+
+  function badgeLatency(ms) {
+    const cls = ms < 10 ? 'text-emerald-400' : ms < 80 ? 'text-amber-400' : 'text-red-400';
+    return `<span class="${cls} font-bold font-mono">${ms.toFixed(1)} ms</span>`;
+  }
+
+  function sourceTag(src) {
+    const map = {
+      redis_cache_aside:    'bg-sky-900 text-sky-300',
+      redis_negative_cache: 'bg-orange-900 text-orange-300',
+      sqlalchemy_db:        'bg-rose-900 text-rose-300',
+    };
+    const cls = map[src] || 'bg-slate-700 text-slate-300';
+    return `<span class="px-2 py-0.5 rounded-full text-xs font-semibold ${cls}">${src}</span>`;
+  }
+
+  function renderResult(id, json, isError) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+
+    // Structured 404 with cache metadata from negative-cache hit
+    if (isError) {
+      const detail = json.detail;
+      if (detail && typeof detail === 'object' && 'cache_hit' in detail) {
+        el.innerHTML = `
+          <div class="bg-slate-800 rounded-xl p-4 text-xs">
+            <div class="flex flex-wrap items-center gap-3 mb-3">
+              ${badgeHit(detail.cache_hit, detail.source === 'redis_negative_cache')}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-900 text-orange-300 text-xs font-bold">404 NOT FOUND</span>
+              <span class="text-slate-500">latency:</span>${badgeLatency(detail.latency_ms)}
+              <span class="text-slate-500">source:</span>${sourceTag(detail.source)}
+              ${detail.ttl_remaining_seconds != null ? `<span class="text-slate-500">TTL left:</span><span class="text-slate-300 font-mono text-xs">${detail.ttl_remaining_seconds}s</span>` : ''}
+            </div>
+            <pre class="text-slate-300 leading-relaxed overflow-auto max-h-64">${JSON.stringify(json, null, 2)}</pre>
+            ${detail.note ? `<p class="text-xs text-slate-500 mt-2 italic">${detail.note}</p>` : ''}
+          </div>`;
+        el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+        return;
+      }
+      const msg = detail || json.error || JSON.stringify(json);
+      el.innerHTML = `<div class="bg-red-950 border border-red-800 rounded-xl p-3 text-red-400 text-xs"><pre>${typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg}</pre></div>`;
+      return;
+    }
+
+    const topRow = 'cache_hit' in json
+      ? `<div class="flex flex-wrap items-center gap-3 mb-3">
+           ${badgeHit(json.cache_hit, false)}
+           <span class="text-slate-500 text-xs">latency:</span>${badgeLatency(json.latency_ms)}
+           <span class="text-slate-500 text-xs">source:</span>${sourceTag(json.source)}
+           ${json.ttl_remaining_seconds != null ? `<span class="text-slate-500 text-xs">TTL:</span><span class="text-slate-300 font-mono text-xs">${json.ttl_remaining_seconds}s</span>` : ''}
+         </div>` : '';
+
+    el.innerHTML = `
+      <div class="bg-slate-800 rounded-xl p-4 text-xs">
+        ${topRow}
+        <pre class="text-slate-300 leading-relaxed overflow-auto max-h-64">${JSON.stringify(json, null, 2)}</pre>
+        ${json.note ? `<p class="text-xs text-slate-500 mt-2 italic">${json.note}</p>` : ''}
+      </div>`;
+    el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+  }
+
+  function loading(id) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+    el.innerHTML = `<div class="bg-slate-800 rounded-xl p-4 text-slate-500 text-xs flex items-center gap-2"><span class="spinner">⬡</span> Fetching…</div>`;
+  }
+
+  async function call(id, url, method = 'GET') {
+    loading(id);
+    try {
+      const r = await fetch(url, { method });
+      renderResult(id, await r.json(), !r.ok);
+    } catch (e) {
+      renderResult(id, { error: e.message }, true);
+    }
+  }
+
+  function fetchCacheAside() { call('ca-result', `/api/cache-aside/order/${document.getElementById('ca-order').value}`); }
+  function statsCacheAside() { call('ca-result', '/api/cache-aside/stats'); }
+  function clearCacheAside() { call('ca-result', '/api/cache-aside/cache', 'DELETE'); }
+
+  (async function checkHealth() {
+    const badge = document.getElementById('health-badge');
+    try {
+      const r = await fetch('/api/health');
+      const json = await r.json();
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono ' + (r.ok ? 'bg-emerald-900 text-emerald-300' : 'bg-red-900 text-red-400');
+      badge.textContent = r.ok ? `backend ok · redis ${json.redis ? 'ok' : 'offline'}` : 'backend error';
+    } catch {
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono bg-red-900 text-red-400';
+      badge.textContent = 'backend unreachable';
+    }
+  })();
+  </script>
+
+</body>
+</html>

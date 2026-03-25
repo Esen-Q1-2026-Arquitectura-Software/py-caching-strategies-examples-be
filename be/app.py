@@ -82,6 +82,19 @@ class UserProfile(Base):
     preferences = Column(JSON, nullable=False)  # {theme, language, notifications}
 
 
+class EventLog(Base):
+    """Analytics event log — persisted by the 2.5 Write-Behind background worker."""
+
+    __tablename__ = "event_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(
+        String(50), nullable=False
+    )  # page_view | click | purchase | login | logout
+    user_id = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(Float, nullable=False)  # unix epoch timestamp
+
+
 # ── Seed data ─────────────────────────────────────────────────────────────────
 
 _SEED_ORDERS = [
@@ -343,7 +356,7 @@ async def get_redis() -> Optional[aioredis.Redis]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _redis
+    global _redis, _wb_worker_task
 
     # ── Create SQLAlchemy tables and seed if empty ─────────────────────────────
     async with engine.begin() as conn:
@@ -374,7 +387,20 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"WARNING: Redis unavailable ({exc}). Redis endpoints will return 503.")
         _redis = None
+    # ── Start Write-Behind background worker ─────────────────────────────────
+    if _redis:
+        _wb_worker_task = asyncio.create_task(_write_behind_worker())
+        print("Write-Behind background worker started.")
+
     yield
+
+    # ── Shutdown: cancel background worker ────────────────────────────────────
+    if _wb_worker_task is not None:
+        _wb_worker_task.cancel()
+        try:
+            await _wb_worker_task
+        except asyncio.CancelledError:
+            pass
     if _redis:
         await _redis.aclose()
     await engine.dispose()
@@ -386,8 +412,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Caching Showcase API",
-    description="FastAPI backend demonstrating 2.1 In-Memory, 2.2 Redis, 2.3 Cache-Aside, and 2.4 Write-Through caching",
-    version="2.0.0",
+    description="FastAPI backend demonstrating 2.1–2.5 caching strategies",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -408,11 +434,11 @@ async def root():
         "status": "ok",
         "service": "caching-showcase-be",
         "strategies": [
-            "lru_cache",
-            "cachetools.TTLCache",
-            "Redis SETEX/GET",
-            "Cache-Aside",
-            "Write-Through",
+            "2.1 lru_cache + cachetools.TTLCache",
+            "2.2 Redis SETEX/GET",
+            "2.3 Cache-Aside (Lazy Loading)",
+            "2.4 Write-Through",
+            "2.5 Write-Behind (Write-Back)",
         ],
     }
 
@@ -1167,4 +1193,316 @@ async def write_through_clear(redis: Optional[aioredis.Redis] = Depends(get_redi
             "Next GET will be a cold-start miss, then stays hot via write-through."
         ),
         "deleted_count": deleted,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.5 — Write-Behind (Write-Back) Pattern
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Rule: acknowledge the write to the client INSTANTLY by writing to a Redis
+# Stream (in-memory queue), then persist to SQLite asynchronously in batches.
+#
+# Flow:
+#   POST /v1/write-behind/event  → XADD to Redis Stream → ack < 1 ms
+#   Background task              → every 5 s, XRANGE + bulk INSERT → DB
+#
+# Use case: analytics events, audit logs, activity streams — high write
+# throughput where brief data-loss risk is acceptable.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_WB_STREAM_KEY = "wb:events"
+_WB_FLUSH_INTERVAL_S = 5  # flush every N seconds
+_WB_BATCH_SIZE = 50  # max entries per flush
+
+_wb_flushed = 0  # total events persisted to DB
+_wb_flush_batches = 0  # total flush operations performed
+_wb_last_flush_ms: Optional[float] = None
+_wb_worker_task: Optional[asyncio.Task] = None
+_wb_lock = threading.Lock()
+
+_EVENT_TYPES = {"page_view", "click", "purchase", "login", "logout"}
+
+
+class EventIn(BaseModel):
+    """Request body for the Write-Behind POST endpoint."""
+
+    event_type: str  # page_view | click | purchase | login | logout
+    user_id: int  # 1–5 for this demo
+    payload: dict = {}
+
+
+async def _write_behind_worker() -> None:
+    """
+    Background asyncio task: reads Redis Stream in batches and bulk-inserts
+    into SQLite every _WB_FLUSH_INTERVAL_S seconds.
+
+    This simulates a real write-behind worker process.  The client that called
+    POST /v1/write-behind/event received its acknowledgement long before this
+    function even wakes up.
+    """
+    global _wb_flushed, _wb_flush_batches, _wb_last_flush_ms
+    while True:
+        try:
+            await asyncio.sleep(_WB_FLUSH_INTERVAL_S)
+            if _redis is None:
+                continue
+
+            # Drain ALL pending entries from the stream
+            entries = await _redis.xrange(
+                _WB_STREAM_KEY, "-", "+", count=_WB_BATCH_SIZE
+            )
+            if not entries:
+                continue
+
+            flush_start = time.perf_counter()
+            async with AsyncSessionLocal() as session:
+                for _msg_id, fields in entries:
+                    session.add(
+                        EventLog(
+                            event_type=fields["event_type"],
+                            user_id=int(fields["user_id"]),
+                            payload=json.loads(fields.get("payload", "{}")),
+                            created_at=float(fields["created_at"]),
+                        )
+                    )
+                await session.commit()
+
+            flush_ms = (time.perf_counter() - flush_start) * 1000
+
+            # Remove flushed entries from the stream
+            await _redis.delete(_WB_STREAM_KEY)
+
+            with _wb_lock:
+                _wb_flushed += len(entries)
+                _wb_flush_batches += 1
+                _wb_last_flush_ms = round(flush_ms, 2)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            print(f"[write-behind-worker] error: {exc}")
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────
+
+
+@app.post("/v1/write-behind/event", status_code=202)
+async def write_behind_post_event(
+    body: EventIn,
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+):
+    """
+    **2.5 Write-Behind** — Accept an analytics event.
+
+    1. Writes to Redis Stream (`XADD`) immediately — non-blocking.
+    2. Returns 202 Accepted in < 1 ms.  DB write has NOT happened yet.
+    3. Background worker flushes the stream to SQLite every 5 s.
+
+    This is the core trade-off: fastest possible write throughput at the cost
+    of a brief window where data lives only in Redis (survives Redis restart,
+    lost only if Redis AND the app crash simultaneously).
+    """
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    if body.user_id < 1 or body.user_id > 5:
+        raise HTTPException(status_code=400, detail="user_id must be 1–5 for this demo")
+    if body.event_type not in _EVENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"event_type must be one of {sorted(_EVENT_TYPES)}",
+        )
+
+    start = time.perf_counter()
+    created_at = time.time()
+
+    # XADD — append to stream, returns the new message ID
+    msg_id = await redis.xadd(
+        _WB_STREAM_KEY,
+        {
+            "event_type": body.event_type,
+            "user_id": str(body.user_id),
+            "payload": json.dumps(body.payload),
+            "created_at": str(created_at),
+        },
+    )
+
+    stream_len = await redis.xlen(_WB_STREAM_KEY)
+    ack_ms = (time.perf_counter() - start) * 1000
+
+    return {
+        "status": "queued",
+        "message_id": msg_id,
+        "write_behind": True,
+        "db_written": False,
+        "cache_written": True,
+        "ack_latency_ms": round(ack_ms, 2),
+        "queue_depth": stream_len,
+        "note": (
+            f"Write-Behind: acknowledged in {round(ack_ms, 2)} ms. "
+            f"DB persistence deferred — background worker flushes every {_WB_FLUSH_INTERVAL_S}s. "
+            f"{stream_len} event(s) pending in Redis Stream."
+        ),
+    }
+
+
+@app.get("/v1/write-behind/events")
+async def write_behind_get_events(
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    **2.5 Write-Behind — Events** — Show pending (stream) vs persisted (DB) events.
+    """
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+
+    # Pending events still in Redis Stream (not yet flushed to DB)
+    raw_pending = await redis.xrange(_WB_STREAM_KEY, "-", "+", count=20)
+    pending = [
+        {
+            "message_id": msg_id,
+            "event_type": fields["event_type"],
+            "user_id": int(fields["user_id"]),
+            "status": "pending_db_write",
+            "created_at": float(fields["created_at"]),
+        }
+        for msg_id, fields in raw_pending
+    ]
+
+    # Most recently persisted events from SQLite
+    result = await db.execute(select(EventLog).order_by(EventLog.id.desc()).limit(10))
+    flushed = [
+        {
+            "id": row.id,
+            "event_type": row.event_type,
+            "user_id": row.user_id,
+            "payload": row.payload,
+            "status": "persisted_to_db",
+            "created_at": row.created_at,
+        }
+        for row in result.scalars().all()
+    ]
+
+    # Count total DB records
+    count_result = await db.execute(select(EventLog))
+    db_total = len(count_result.scalars().all())
+
+    return {
+        "pending_in_stream": pending,
+        "pending_count": len(pending),
+        "flushed_to_db": flushed,
+        "total_flushed_count": db_total,
+    }
+
+
+@app.get("/v1/write-behind/stats")
+async def write_behind_stats(
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return Write-Behind worker stats."""
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+
+    with _wb_lock:
+        flushed = _wb_flushed
+        batches = _wb_flush_batches
+        last_flush_ms = _wb_last_flush_ms
+
+    queue_depth = await redis.xlen(_WB_STREAM_KEY)
+
+    # Total events in DB
+    count_result = await db.execute(select(EventLog))
+    db_total = len(count_result.scalars().all())
+
+    return {
+        "strategy": "Write-Behind (Write-Back)",
+        "queue_depth": queue_depth,
+        "total_flushed_to_db": flushed,
+        "db_total_events": db_total,
+        "flush_batches": batches,
+        "last_flush_ms": last_flush_ms,
+        "flush_interval_seconds": _WB_FLUSH_INTERVAL_S,
+        "batch_size": _WB_BATCH_SIZE,
+        "stream_key": _WB_STREAM_KEY,
+        "note": (
+            f"Worker runs every {_WB_FLUSH_INTERVAL_S}s. "
+            f"{queue_depth} event(s) in stream, {flushed} total flushed to DB."
+        ),
+    }
+
+
+@app.post("/v1/write-behind/flush")
+async def write_behind_flush(
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+):
+    """
+    **2.5 Write-Behind — Force Flush** — Immediately drain Redis Stream to DB.
+
+    Useful in the demo to see the before/after without waiting 5 seconds.
+    """
+    global _wb_flushed, _wb_flush_batches, _wb_last_flush_ms
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+
+    entries = await redis.xrange(_WB_STREAM_KEY, "-", "+")
+    if not entries:
+        return {
+            "message": "No pending events to flush",
+            "flushed_count": 0,
+            "queue_depth": 0,
+        }
+
+    flush_start = time.perf_counter()
+    async with AsyncSessionLocal() as session:
+        for _msg_id, fields in entries:
+            session.add(
+                EventLog(
+                    event_type=fields["event_type"],
+                    user_id=int(fields["user_id"]),
+                    payload=json.loads(fields.get("payload", "{}")),
+                    created_at=float(fields["created_at"]),
+                )
+            )
+        await session.commit()
+    flush_ms = (time.perf_counter() - flush_start) * 1000
+
+    await redis.delete(_WB_STREAM_KEY)
+
+    with _wb_lock:
+        _wb_flushed += len(entries)
+        _wb_flush_batches += 1
+        _wb_last_flush_ms = round(flush_ms, 2)
+
+    return {
+        "message": f"Force-flushed {len(entries)} event(s) to DB",
+        "flushed_count": len(entries),
+        "flush_ms": round(flush_ms, 2),
+        "queue_depth": 0,
+        "note": "Manual flush complete — all pending events are now persisted to SQLite.",
+    }
+
+
+@app.delete("/v1/write-behind/clear")
+async def write_behind_clear(
+    redis: Optional[aioredis.Redis] = Depends(get_redis),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear all Write-Behind data: stream + DB records + stats reset."""
+    global _wb_flushed, _wb_flush_batches, _wb_last_flush_ms
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+
+    await redis.delete(_WB_STREAM_KEY)
+    await db.execute(text("DELETE FROM event_logs"))
+    await db.commit()
+
+    with _wb_lock:
+        _wb_flushed = _wb_flush_batches = 0
+        _wb_last_flush_ms = None
+
+    return {
+        "message": "Write-Behind data cleared — stream, DB, and stats reset.",
+        "ok": True,
     }

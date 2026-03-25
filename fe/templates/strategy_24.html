@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.4 Write-Through — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">
+          ← Back
+        </a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-orange-400 font-black text-lg">2.4</span>
+          <span class="text-white font-bold text-lg ml-2">Write-Through Pattern</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-orange-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-orange-300 mb-3">What is Write-Through Caching?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        On every write (PUT), the application updates <strong class="text-slate-200">both the database and the
+        Redis cache synchronously</strong> in the same request before responding. This eliminates stale reads:
+        any GET that follows a PUT will always hit a fresh cache value.
+        The trade-off is slightly higher write latency (two writes instead of one), but reads are
+        always fast and always consistent.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-orange-400 font-semibold">On Write (PUT)</div>
+          <div class="text-slate-300">UPDATE in SQLite <em>and</em> SETEX in Redis before ack.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-orange-400 font-semibold">On Read (GET)</div>
+          <div class="text-slate-300">Almost always a cache HIT since every PUT warms the cache.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-orange-400 font-semibold">TTL</div>
+          <div class="text-slate-300">600 s (10 min). Refreshed on every write.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-orange-400 font-semibold">Best for</div>
+          <div class="text-slate-300">User profiles, settings — data written often but must be consistent.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pattern diagram ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-orange-950 to-slate-900 border-b border-orange-900 px-5 py-4">
+        <h3 class="text-orange-300 font-bold text-base">Write-Through Flow</h3>
+        <p class="text-slate-400 text-xs mt-1">
+          Key: <code class="text-slate-200 font-mono">profile:{user_id}</code> — TTL: 600 s
+        </p>
+      </div>
+      <div class="p-5">
+        <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono leading-loose">
+          <div class="mb-3">
+            <span class="text-orange-300 font-bold">PUT /profile/{id}</span>
+            <span class="text-slate-500 ml-2">(write path)</span>
+          </div>
+          <div class="space-y-1 text-slate-400 pl-4 border-l-2 border-orange-800">
+            <div><span class="text-orange-400">1.</span> <span class="text-slate-300">UPDATE user_profiles SET name=?, bio=? WHERE id=?</span> <span class="text-emerald-500 ml-2">← SQLAlchemy</span></div>
+            <div><span class="text-orange-400">2.</span> <span class="text-slate-300">SETEX profile:{id} 600 &lt;updated_json&gt;</span> <span class="text-emerald-500 ml-2">← Redis (same request)</span></div>
+            <div><span class="text-orange-400">3.</span> <span class="text-slate-300">return 200 OK  ← both writes confirmed</span></div>
+          </div>
+          <div class="mt-4 mb-3">
+            <span class="text-orange-300 font-bold">GET /profile/{id}</span>
+            <span class="text-slate-500 ml-2">(read path)</span>
+          </div>
+          <div class="space-y-1 text-slate-400 pl-4 border-l-2 border-orange-800">
+            <div><span class="text-orange-400">1.</span> <span class="text-slate-300">GET profile:{id}</span> <span class="text-emerald-400 ml-2">→ HIT (cache always current after any PUT)</span></div>
+            <div class="text-slate-600 pl-4">MISS only on cold start / after cache clear → DB fallback warms cache once.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Demo ───────────────────────────────────────────────────────────── -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      <!-- ── Read Profile ──────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-orange-950 to-slate-900 border-b border-orange-900 px-5 py-4">
+          <h3 class="text-orange-300 font-bold">Read Profile (GET)</h3>
+          <p class="text-slate-400 text-xs mt-1">Fetch profile from cache. First call may miss; after any PUT it will always HIT.</p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="space-y-3">
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">User ID</label>
+              <select id="get-user-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500">
+                <option value="1">1 — Alice Johnson (dark, en)</option>
+                <option value="2">2 — Bob Smith (light, fr)</option>
+                <option value="3">3 — Carol White (dark, de)</option>
+                <option value="4">4 — David Lee (light, ja)</option>
+                <option value="5">5 — Eve Martinez (dark, es)</option>
+              </select>
+            </div>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="fetchProfile()" class="px-4 py-2 bg-orange-700 hover:bg-orange-600 rounded-lg text-sm font-semibold transition-colors">
+              Fetch Profile
+            </button>
+            <button onclick="statsWT()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-semibold transition-colors">
+              Stats
+            </button>
+            <button onclick="clearWT()" class="px-4 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-semibold transition-colors">
+              Clear Cache
+            </button>
+          </div>
+          <div id="get-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Update Profile ────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-orange-950 to-slate-900 border-b border-orange-900 px-5 py-4">
+          <h3 class="text-orange-300 font-bold">Update Profile (PUT) — Write-Through</h3>
+          <p class="text-slate-400 text-xs mt-1">Updates DB + Redis cache in the same request atomically.</p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="space-y-3">
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">User ID</label>
+              <select id="put-user-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500">
+                <option value="1">1 — Alice Johnson</option>
+                <option value="2">2 — Bob Smith</option>
+                <option value="3">3 — Carol White</option>
+                <option value="4">4 — David Lee</option>
+                <option value="5">5 — Eve Martinez</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">New Bio</label>
+              <input id="put-bio" type="text" placeholder="e.g. Senior engineer & coffee lover"
+                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500" />
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">Theme preference</label>
+              <select id="put-theme" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500">
+                <option value="dark">dark</option>
+                <option value="light">light</option>
+              </select>
+            </div>
+          </div>
+          <button onclick="updateProfile()" class="w-full px-4 py-2 bg-orange-700 hover:bg-orange-600 rounded-lg text-sm font-semibold transition-colors">
+            Update Profile (Write-Through)
+          </button>
+          <p class="text-slate-500 text-xs">
+            Tip: update a profile, then immediately GET — it should always be a <span class="text-emerald-400 font-semibold">CACHE HIT</span>.
+          </p>
+          <div id="put-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /grid -->
+
+    <!-- ── Comparison: Write-Through vs Cache-Aside ───────────────────────── -->
+    <section>
+      <h2 class="text-base font-bold text-slate-200 mb-4">Write-Through vs Cache-Aside</h2>
+      <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <table class="w-full text-sm text-left">
+          <thead class="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
+            <tr>
+              <th class="px-4 py-3">Aspect</th>
+              <th class="px-4 py-3">Write-Through (2.4)</th>
+              <th class="px-4 py-3">Cache-Aside (2.3)</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 bg-slate-900 text-xs text-slate-400">
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Write flow</td>
+              <td class="px-4 py-3">PUT → DB + Cache (atomic)</td>
+              <td class="px-4 py-3">PUT → DB only (cache stale until TTL)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Read after write</td>
+              <td class="px-4 py-3 text-emerald-400">Always cache HIT</td>
+              <td class="px-4 py-3 text-red-400">Cache MISS (stale until re-populated)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Consistency</td>
+              <td class="px-4 py-3 text-emerald-400">Strong (no stale reads)</td>
+              <td class="px-4 py-3 text-amber-400">Eventual (TTL window)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Write cost</td>
+              <td class="px-4 py-3 text-amber-400">Higher (2 writes per PUT)</td>
+              <td class="px-4 py-3 text-emerald-400">Lower (1 write per PUT)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Best for</td>
+              <td class="px-4 py-3">User profiles, config, settings</td>
+              <td class="px-4 py-3">Read-heavy, rare writes</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  // ── Utilities ────────────────────────────────────────────────────────────────
+  function badgeHit(hit) {
+    return hit
+      ? '<span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300">● CACHE HIT</span>'
+      : '<span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-red-900 text-red-400">● CACHE MISS</span>';
+  }
+  function badgeLatency(ms) {
+    const cls = ms < 5 ? 'text-emerald-400' : ms < 100 ? 'text-amber-400' : 'text-red-400';
+    return `<span class="${cls} font-mono font-bold">${ms} ms</span>`;
+  }
+  function srcTag(src) {
+    const colors = {
+      redis_write_through: 'bg-orange-900 text-orange-300',
+      sqlalchemy_db: 'bg-sky-900 text-sky-300',
+    };
+    const cls = colors[src] || 'bg-slate-700 text-slate-300';
+    return `<span class="inline-block text-xs px-2 py-0.5 rounded-full font-mono ${cls}">${src}</span>`;
+  }
+  function loading(id) {
+    document.getElementById(id).innerHTML = '<span class="spinner text-slate-400">↻</span> loading…';
+  }
+
+  async function call(resultId, url, method = 'GET', body = null) {
+    loading(resultId);
+    try {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      const r = await fetch(url, opts);
+      const json = await r.json();
+      const el = document.getElementById(resultId);
+      el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in space-y-2';
+
+      if (r.ok && json.data) {
+        el.innerHTML = `
+          <div class="flex flex-wrap gap-2 items-center">
+            ${badgeHit(json.cache_hit)}
+            ${badgeLatency(json.latency_ms)}
+            ${srcTag(json.source)}
+          </div>
+          <pre class="text-slate-300 mt-2 leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+      } else if (r.ok && json.write_through) {
+        el.innerHTML = `
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full bg-orange-900 text-orange-300">✓ DB + CACHE UPDATED</span>
+            ${badgeLatency(json.db_write_ms)}
+          </div>
+          <pre class="text-slate-300 mt-2 leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+      } else {
+        el.innerHTML = `<pre class="${r.ok ? 'text-slate-300' : 'text-red-400'} leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+      }
+    } catch (e) {
+      document.getElementById(resultId).innerHTML = `<span class="text-red-400">${e.message}</span>`;
+    }
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+  function fetchProfile() {
+    const uid = document.getElementById('get-user-id').value;
+    call('get-result', `/api/write-through/profile/${uid}`);
+  }
+
+  function statsWT() {
+    call('get-result', '/api/write-through/stats');
+  }
+
+  function clearWT() {
+    call('get-result', '/api/write-through/cache', 'DELETE');
+  }
+
+  function updateProfile() {
+    const uid = document.getElementById('put-user-id').value;
+    const bio = document.getElementById('put-bio').value.trim();
+    const theme = document.getElementById('put-theme').value;
+    const body = {};
+    if (bio) body.bio = bio;
+    body.preferences = { theme };
+    call('put-result', `/api/write-through/profile/${uid}`, 'PUT', body);
+  }
+
+  // ── Health check ─────────────────────────────────────────────────────────────
+  (async function checkHealth() {
+    const badge = document.getElementById('health-badge');
+    try {
+      const r = await fetch('/api/health');
+      const json = await r.json();
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono ' + (r.ok ? 'bg-emerald-900 text-emerald-300' : 'bg-red-900 text-red-400');
+      badge.textContent = r.ok ? `backend ok · redis ${json.redis ? 'ok' : 'offline'}` : 'backend error';
+    } catch {
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono bg-red-900 text-red-400';
+      badge.textContent = 'backend unreachable';
+    }
+  })();
+  </script>
+
+</body>
+</html>

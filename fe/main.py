@@ -4,25 +4,15 @@ Caching Showcase — Flask Frontend
 Thin proxy layer that forwards requests to the FastAPI backend and
 serves the interactive showcase UI.
 
-Routes:
-  GET  /                                    — main UI
-  GET  /api/lru/country/<code>              — proxy → /v1/lru/country/<code>
-  GET  /api/lru/stats                       — proxy → /v1/lru/stats
-  DELETE /api/lru/cache                     — proxy → /v1/lru/cache
-  GET  /api/ttl/user/<id>                   — proxy → /v1/ttl/user/<id>
-  GET  /api/ttl/stats                       — proxy → /v1/ttl/stats
-  DELETE /api/ttl/cache                     — proxy → /v1/ttl/cache
-  GET  /api/redis/product/<id>              — proxy → /v1/redis/product/<id>
-  GET  /api/redis/stats                     — proxy → /v1/redis/stats
-  DELETE /api/redis/cache                   — proxy → /v1/redis/cache
-  GET  /api/cache-aside/order/<id>          — proxy → /v1/cache-aside/order/<id>
-  GET  /api/cache-aside/stats               — proxy → /v1/cache-aside/stats
-  DELETE /api/cache-aside/cache             — proxy → /v1/cache-aside/cache
-  GET  /api/write-through/profile/<id>      — proxy → /v1/write-through/profile/<id>
-  PUT  /api/write-through/profile/<id>      — proxy → /v1/write-through/profile/<id>
-  GET  /api/write-through/stats             — proxy → /v1/write-through/stats
-  DELETE /api/write-through/cache           — proxy → /v1/write-through/cache
-  GET  /api/health                          — proxy → /health
+Pages:
+  GET  /                        — landing page with strategy cards
+  GET  /strategy/21             — 2.1 In-Memory Caching (lru_cache + TTLCache)
+  GET  /strategy/22             — 2.2 Redis Cache
+  GET  /strategy/23             — 2.3 Cache-Aside Pattern
+  GET  /strategy/24             — 2.4 Write-Through Pattern
+  GET  /strategy/25             — 2.5 Write-Behind (Write-Back) Pattern
+
+API Proxies: (see routes below)
 """
 
 import os
@@ -40,19 +30,47 @@ def _proxy(method: str, path: str):
     """Forward a request to the backend and return a Flask JSON response."""
     url = f"{BACKEND_URL}{path}"
     try:
+        kwargs = {}
+        if method in ("POST", "PUT", "PATCH") and request.is_json:
+            kwargs["json"] = request.get_json(silent=True) or {}
         with httpx.Client(timeout=_CLIENT_TIMEOUT) as client:
-            resp = client.request(method, url)
+            resp = client.request(method, url, **kwargs)
         return jsonify(resp.json()), resp.status_code
     except httpx.RequestError as exc:
         return jsonify({"error": str(exc), "detail": "Backend unreachable"}), 502
 
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# ── Pages ─────────────────────────────────────────────────────────────────────
 
 
 @app.get("/")
 def index():
-    return render_template("index.html", backend_url=BACKEND_URL)
+    return render_template("index.html")
+
+
+@app.get("/strategy/21")
+def strategy_21():
+    return render_template("strategy_21.html")
+
+
+@app.get("/strategy/22")
+def strategy_22():
+    return render_template("strategy_22.html")
+
+
+@app.get("/strategy/23")
+def strategy_23():
+    return render_template("strategy_23.html")
+
+
+@app.get("/strategy/24")
+def strategy_24():
+    return render_template("strategy_24.html")
+
+
+@app.get("/strategy/25")
+def strategy_25():
+    return render_template("strategy_25.html")
 
 
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
@@ -127,24 +145,17 @@ def cache_aside_clear():
     return _proxy("DELETE", "/v1/cache-aside/cache")
 
 
-# ── Write-Through (2.4) proxy ─────────────────────────────────────────────────
+# ── Write-Through (2.4) proxy ────────────────────────────────────────────
 
 
 @app.get("/api/write-through/profile/<int:user_id>")
-def write_through_get_profile(user_id: int):
+def write_through_get(user_id: int):
     return _proxy("GET", f"/v1/write-through/profile/{user_id}")
 
 
 @app.route("/api/write-through/profile/<int:user_id>", methods=["PUT"])
-def write_through_update_profile(user_id: int):
-    """Forward PUT with JSON body to the backend."""
-    url = f"{BACKEND_URL}/v1/write-through/profile/{user_id}"
-    try:
-        with httpx.Client(timeout=_CLIENT_TIMEOUT) as client:
-            resp = client.put(url, json=request.get_json(force=True) or {})
-        return jsonify(resp.json()), resp.status_code
-    except httpx.RequestError as exc:
-        return jsonify({"error": str(exc), "detail": "Backend unreachable"}), 502
+def write_through_put(user_id: int):
+    return _proxy("PUT", f"/v1/write-through/profile/{user_id}")
 
 
 @app.get("/api/write-through/stats")
@@ -155,6 +166,34 @@ def write_through_stats():
 @app.route("/api/write-through/cache", methods=["DELETE"])
 def write_through_clear():
     return _proxy("DELETE", "/v1/write-through/cache")
+
+
+# ── Write-Behind (2.5) proxy ────────────────────────────────────────────
+
+
+@app.route("/api/write-behind/event", methods=["POST"])
+def write_behind_post_event():
+    return _proxy("POST", "/v1/write-behind/event")
+
+
+@app.get("/api/write-behind/events")
+def write_behind_get_events():
+    return _proxy("GET", "/v1/write-behind/events")
+
+
+@app.get("/api/write-behind/stats")
+def write_behind_stats():
+    return _proxy("GET", "/v1/write-behind/stats")
+
+
+@app.route("/api/write-behind/flush", methods=["POST"])
+def write_behind_flush():
+    return _proxy("POST", "/v1/write-behind/flush")
+
+
+@app.route("/api/write-behind/clear", methods=["DELETE"])
+def write_behind_clear():
+    return _proxy("DELETE", "/v1/write-behind/clear")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

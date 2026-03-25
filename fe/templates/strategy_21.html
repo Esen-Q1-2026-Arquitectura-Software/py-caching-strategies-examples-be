@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.1 In-Memory Caching — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">
+          ← Back
+        </a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-violet-400 font-black text-lg">2.1</span>
+          <span class="text-white font-bold text-lg ml-2">In-Memory Caching</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-violet-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-violet-300 mb-3">What is In-Memory Caching?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        Data is stored directly in the Python process's RAM — no network round-trip, no serialisation,
+        just a dictionary lookup. Access is nanosecond-fast. The trade-off: the cache lives only as long as
+        the process does, and is <em>not shared</em> between multiple workers or app instances.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-violet-400 font-semibold">Scope</div>
+          <div class="text-slate-300">Single OS process. Not visible to other workers.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-violet-400 font-semibold">Survival</div>
+          <div class="text-slate-300">Cache is wiped on every app restart / deploy.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-violet-400 font-semibold">Best for</div>
+          <div class="text-slate-300">Immutable reference data. Country configs, feature flags, compiled regexes.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Two demo cards side by side ───────────────────────────────────── -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+      <!-- ── lru_cache card ─────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-violet-950 to-slate-900 border-b border-violet-900 px-5 py-4">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-violet-300 font-bold text-base font-mono">functools.lru_cache</span>
+            <span class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">No TTL · maxsize=128</span>
+          </div>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Decorator that wraps any pure function. The return value is memoised forever (or until
+            the process restarts / the cache is cleared). Evicts the <strong class="text-violet-300">Least Recently Used</strong>
+            entry when <code>maxsize</code> is hit.
+          </p>
+        </div>
+
+        <!-- How it works panel -->
+        <div class="px-5 pt-4">
+          <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono text-slate-400 leading-relaxed mb-4">
+            <span class="text-violet-400">@lru_cache(maxsize=128)</span><br/>
+            <span class="text-sky-300">def</span> fetch_country(code: str) -&gt; dict:<br/>
+            <span class="ml-4 text-slate-500"># first call: 120 ms DB round-trip</span><br/>
+            <span class="ml-4 text-slate-300">time.sleep(0.120)</span><br/>
+            <span class="ml-4 text-slate-300">return _COUNTRY_DB[code]</span><br/>
+            <br/>
+            <span class="text-slate-500"># second call: 0 ms — returns from RAM</span>
+          </div>
+        </div>
+
+        <div class="px-5 pb-5 space-y-4">
+          <div class="flex items-center gap-3">
+            <label class="text-slate-400 text-sm w-20">Country</label>
+            <select id="lru-country" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-violet-600">
+              <option value="US">🇺🇸 US — United States</option>
+              <option value="DE">🇩🇪 DE — Germany</option>
+              <option value="JP">🇯🇵 JP — Japan</option>
+              <option value="BR">🇧🇷 BR — Brazil</option>
+              <option value="IN">🇮🇳 IN — India</option>
+              <option value="GB">🇬🇧 GB — United Kingdom</option>
+            </select>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="fetchLru()" class="flex-1 bg-violet-700 hover:bg-violet-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+              Fetch Country Config
+            </button>
+            <button onclick="statsLru()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors" title="Cache statistics">
+              Stats
+            </button>
+            <button onclick="clearLru()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors" title="Clear all cache entries">
+              Clear
+            </button>
+          </div>
+          <div id="lru-result" class="hidden fade-in"></div>
+        </div>
+      </div>
+
+      <!-- ── TTLCache card ───────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-amber-950 to-slate-900 border-b border-amber-900 px-5 py-4">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-amber-300 font-bold text-base font-mono">cachetools.TTLCache</span>
+            <span class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">TTL: 30 s · maxsize=100</span>
+          </div>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            Third-party cache with an automatic <strong class="text-amber-300">Time-To-Live</strong>. Entries expire 30 seconds
+            after insertion — ideal for permission checks, feature flags, or any data that changes occasionally.
+            Protected by <code class="text-amber-300">threading.Lock()</code> for thread safety.
+          </p>
+        </div>
+
+        <!-- How it works panel -->
+        <div class="px-5 pt-4">
+          <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono text-slate-400 leading-relaxed mb-4">
+            <span class="text-amber-400">_store = TTLCache(maxsize=100, ttl=30)</span><br/>
+            <span class="text-amber-400">_lock  = threading.Lock()</span><br/>
+            <br/>
+            <span class="text-sky-300">with</span> _lock:<br/>
+            <span class="ml-4 text-sky-300">if</span> key <span class="text-sky-300">in</span> _store:<br/>
+            <span class="ml-8 text-slate-300">return _store[key], <span class="text-emerald-400">True</span>  <span class="text-slate-500"># HIT</span></span><br/>
+            <span class="ml-4 text-slate-300">perms = db_lookup(user_id)  <span class="text-slate-500"># MISS</span></span><br/>
+            <span class="ml-4 text-slate-300">_store[key] = perms</span>
+          </div>
+        </div>
+
+        <div class="px-5 pb-5 space-y-4">
+          <div class="flex items-center gap-3">
+            <label class="text-slate-400 text-sm w-20">User ID</label>
+            <select id="ttl-user" class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-amber-600">
+              <option value="1">1 — admin (read, write, delete, admin)</option>
+              <option value="2">2 — editor (read, write)</option>
+              <option value="3">3 — viewer (read)</option>
+              <option value="4">4 — publisher (read, write, publish)</option>
+              <option value="5">5 — commenter (read, comment)</option>
+            </select>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="fetchTtl()" class="flex-1 bg-amber-700 hover:bg-amber-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+              Fetch Permissions
+            </button>
+            <button onclick="statsTtl()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm px-3 py-2 rounded-lg transition-colors">
+              Stats
+            </button>
+            <button onclick="clearTtl()" class="bg-red-950 hover:bg-red-900 text-red-400 text-sm px-3 py-2 rounded-lg transition-colors">
+              Clear
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            💡 Fetch the same user twice &mdash; first is a MISS (~150 ms), second is a HIT (&lt;1 ms).
+            Wait 30 seconds and the entry auto-expires &mdash; next fetch is a MISS again.
+          </p>
+          <div id="ttl-result" class="hidden fade-in"></div>
+        </div>
+      </div>
+
+    </div><!-- end grid -->
+
+    <!-- ── Key differences ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+      <h3 class="text-sm font-bold text-slate-300 mb-4">lru_cache vs TTLCache — When to use which</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs text-left">
+          <thead class="text-slate-500 uppercase tracking-wide">
+            <tr>
+              <th class="pb-2 pr-4">Feature</th>
+              <th class="pb-2 pr-4 text-violet-400">lru_cache</th>
+              <th class="pb-2 text-amber-400">TTLCache</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 text-slate-400">
+            <tr><td class="py-2 pr-4">Expiry</td><td class="pr-4 text-slate-300">Never (only LRU eviction)</td><td class="text-slate-300">After N seconds</td></tr>
+            <tr><td class="py-2 pr-4">Thread safety</td><td class="pr-4">GIL-protected (CPython)</td><td>Explicit threading.Lock()</td></tr>
+            <tr><td class="py-2 pr-4">Data changes</td><td class="pr-4">Never / rarely</td><td>Occasionally (30 s stale is OK)</td></tr>
+            <tr><td class="py-2 pr-4">Decorator style</td><td class="pr-4">@lru_cache — pure functions only</td><td>Manual get/set with lock</td></tr>
+            <tr><td class="py-2 pr-4">Good for</td><td class="pr-4">Country configs, compiled regexes, DB schema</td><td>User permissions, feature flags, session data</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  function badgeHit(hit) {
+    return hit
+      ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900 text-emerald-300 text-xs font-bold">● CACHE HIT</span>'
+      : '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-900 text-red-400 text-xs font-bold">○ CACHE MISS</span>';
+  }
+
+  function badgeLatency(ms) {
+    const cls = ms < 10 ? 'text-emerald-400' : ms < 80 ? 'text-amber-400' : 'text-red-400';
+    return `<span class="${cls} font-bold font-mono">${ms.toFixed(1)} ms</span>`;
+  }
+
+  function sourceTag(src) {
+    const map = {
+      lru_cache:  'bg-violet-900 text-violet-300',
+      ttl_cache:  'bg-amber-900 text-amber-300',
+    };
+    const cls = map[src] || 'bg-slate-700 text-slate-300';
+    return `<span class="px-2 py-0.5 rounded-full text-xs font-semibold ${cls}">${src}</span>`;
+  }
+
+  function renderResult(id, json, isError) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+    if (isError) {
+      const msg = json.detail || json.error || JSON.stringify(json);
+      el.innerHTML = `<div class="bg-red-950 border border-red-800 rounded-xl p-3 text-red-400 text-xs"><pre>${typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg}</pre></div>`;
+      return;
+    }
+    const topRow = 'cache_hit' in json
+      ? `<div class="flex flex-wrap items-center gap-3 mb-3">
+           ${badgeHit(json.cache_hit)}
+           <span class="text-slate-500 text-xs">latency:</span>${badgeLatency(json.latency_ms)}
+           <span class="text-slate-500 text-xs">source:</span>${sourceTag(json.source)}
+         </div>` : '';
+    el.innerHTML = `
+      <div class="bg-slate-800 rounded-xl p-4 text-xs">
+        ${topRow}
+        <pre class="text-slate-300 leading-relaxed overflow-auto max-h-64">${JSON.stringify(json, null, 2)}</pre>
+      </div>`;
+    el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+  }
+
+  function loading(id) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+    el.innerHTML = `<div class="bg-slate-800 rounded-xl p-4 text-slate-500 text-xs flex items-center gap-2"><span class="spinner">⬡</span> Fetching…</div>`;
+  }
+
+  async function call(id, url, method = 'GET') {
+    loading(id);
+    try {
+      const r = await fetch(url, { method });
+      renderResult(id, await r.json(), !r.ok);
+    } catch (e) {
+      renderResult(id, { error: e.message }, true);
+    }
+  }
+
+  function fetchLru() { call('lru-result', `/api/lru/country/${document.getElementById('lru-country').value}`); }
+  function statsLru() { call('lru-result', '/api/lru/stats'); }
+  function clearLru() { call('lru-result', '/api/lru/cache', 'DELETE'); }
+
+  function fetchTtl() { call('ttl-result', `/api/ttl/user/${document.getElementById('ttl-user').value}`); }
+  function statsTtl() { call('ttl-result', '/api/ttl/stats'); }
+  function clearTtl() { call('ttl-result', '/api/ttl/cache', 'DELETE'); }
+
+  (async function checkHealth() {
+    const badge = document.getElementById('health-badge');
+    try {
+      const r = await fetch('/api/health');
+      const json = await r.json();
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono ' + (r.ok ? 'bg-emerald-900 text-emerald-300' : 'bg-red-900 text-red-400');
+      badge.textContent = r.ok ? `backend ok · redis ${json.redis ? 'ok' : 'offline'}` : 'backend error';
+    } catch {
+      badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono bg-red-900 text-red-400';
+      badge.textContent = 'backend unreachable';
+    }
+  })();
+  </script>
+
+</body>
+</html>

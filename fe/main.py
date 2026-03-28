@@ -148,6 +148,11 @@ def strategy_29():
     return render_template("strategy_29.html")
 
 
+@app.get("/strategy/210")
+def strategy_210():
+    return render_template("strategy_210.html")
+
+
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
 
 
@@ -388,6 +393,43 @@ def aiocache_stats():
 @app.route("/api/aiocache/reset", methods=["POST"])
 def aiocache_reset():
     return _proxy("POST", "/v1/aiocache/reset")
+
+
+# ── DB Query Cache (2.10) proxy ──────────────────────────────────────────────
+
+
+@app.get("/api/db-query/employees")
+def db_query_employees():
+    params = {k: v for k, v in request.args.items()}
+    qs = "&".join(f"{k}={v}" for k, v in params.items())
+    path = f"/v1/db-query/employees?{qs}" if qs else "/v1/db-query/employees"
+    return _proxy("GET", path)
+
+
+@app.get("/api/db-query/departments/stats")
+def db_query_dept_stats():
+    return _proxy("GET", "/v1/db-query/departments/stats")
+
+
+@app.get("/api/db-query/top-earners")
+def db_query_top_earners():
+    limit = request.args.get("limit", "5")
+    return _proxy("GET", f"/v1/db-query/top-earners?limit={limit}")
+
+
+@app.route("/api/db-query/cache", methods=["DELETE"])
+def db_query_clear_cache():
+    return _proxy("DELETE", "/v1/db-query/cache")
+
+
+@app.get("/api/db-query/stats")
+def db_query_stats():
+    return _proxy("GET", "/v1/db-query/stats")
+
+
+@app.route("/api/db-query/reset", methods=["POST"])
+def db_query_reset():
+    return _proxy("POST", "/v1/db-query/reset")
 
 
 if __name__ == "__main__":

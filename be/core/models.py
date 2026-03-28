@@ -84,3 +84,16 @@ class Recipe(Base):
     prep_minutes = Column(Integer, nullable=False)
     ingredients = Column(JSON, nullable=False)
     instructions = Column(String(1000), nullable=False)
+
+
+class Employee(Base):
+    """Employees table — source of truth for the 2.10 DB Query Caching demo."""
+
+    __tablename__ = "employees"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    department = Column(String(80), nullable=False)
+    role = Column(String(100), nullable=False)
+    salary = Column(Integer, nullable=False)
+    hire_year = Column(Integer, nullable=False)
+    active = Column(Integer, nullable=False, default=1)  # 1=active, 0=inactive

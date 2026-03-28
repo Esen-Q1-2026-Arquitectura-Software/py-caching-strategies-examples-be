@@ -1,5 +1,13 @@
 from core.database import AsyncSessionLocal
-from core.models import CatalogItem, NewsArticle, Order, Recipe, Track, UserProfile
+from core.models import (
+    CatalogItem,
+    Employee,
+    NewsArticle,
+    Order,
+    Recipe,
+    Track,
+    UserProfile,
+)
 from sqlalchemy import select
 
 _SEED_ORDERS = [
@@ -408,6 +416,193 @@ _SEED_RECIPES = [
     },
 ]
 
+_SEED_EMPLOYEES = [
+    # Engineering (7)
+    {
+        "id": 1,
+        "name": "Sarah Kim",
+        "department": "Engineering",
+        "role": "Staff Engineer",
+        "salary": 148000,
+        "hire_year": 2018,
+        "active": 1,
+    },
+    {
+        "id": 2,
+        "name": "James Okafor",
+        "department": "Engineering",
+        "role": "Senior Engineer",
+        "salary": 132000,
+        "hire_year": 2019,
+        "active": 1,
+    },
+    {
+        "id": 3,
+        "name": "Priya Nair",
+        "department": "Engineering",
+        "role": "Senior Engineer",
+        "salary": 128000,
+        "hire_year": 2020,
+        "active": 1,
+    },
+    {
+        "id": 4,
+        "name": "Lucas Rodrigues",
+        "department": "Engineering",
+        "role": "Backend Engineer",
+        "salary": 112000,
+        "hire_year": 2021,
+        "active": 1,
+    },
+    {
+        "id": 5,
+        "name": "Mei Lin",
+        "department": "Engineering",
+        "role": "Frontend Engineer",
+        "salary": 105000,
+        "hire_year": 2021,
+        "active": 1,
+    },
+    {
+        "id": 6,
+        "name": "Omar Hassan",
+        "department": "Engineering",
+        "role": "Junior Engineer",
+        "salary": 82000,
+        "hire_year": 2023,
+        "active": 1,
+    },
+    {
+        "id": 7,
+        "name": "Chloe Dubois",
+        "department": "Engineering",
+        "role": "Intern",
+        "salary": 58000,
+        "hire_year": 2024,
+        "active": 0,
+    },
+    # Marketing (5)
+    {
+        "id": 8,
+        "name": "Noah Williams",
+        "department": "Marketing",
+        "role": "Marketing Director",
+        "salary": 98000,
+        "hire_year": 2017,
+        "active": 1,
+    },
+    {
+        "id": 9,
+        "name": "Aisha Osei",
+        "department": "Marketing",
+        "role": "Brand Manager",
+        "salary": 85000,
+        "hire_year": 2019,
+        "active": 1,
+    },
+    {
+        "id": 10,
+        "name": "Ethan Park",
+        "department": "Marketing",
+        "role": "Content Strategist",
+        "salary": 72000,
+        "hire_year": 2021,
+        "active": 1,
+    },
+    {
+        "id": 11,
+        "name": "Sofia Rossi",
+        "department": "Marketing",
+        "role": "SEO Specialist",
+        "salary": 64000,
+        "hire_year": 2022,
+        "active": 1,
+    },
+    {
+        "id": 12,
+        "name": "Liam Chen",
+        "department": "Marketing",
+        "role": "Marketing Coordinator",
+        "salary": 55000,
+        "hire_year": 2023,
+        "active": 0,
+    },
+    # Finance (4)
+    {
+        "id": 13,
+        "name": "Grace Adeyemi",
+        "department": "Finance",
+        "role": "Finance Manager",
+        "salary": 115000,
+        "hire_year": 2016,
+        "active": 1,
+    },
+    {
+        "id": 14,
+        "name": "Hugo Lefebvre",
+        "department": "Finance",
+        "role": "Senior Accountant",
+        "salary": 97000,
+        "hire_year": 2018,
+        "active": 1,
+    },
+    {
+        "id": 15,
+        "name": "Zara Ahmed",
+        "department": "Finance",
+        "role": "Financial Analyst",
+        "salary": 80000,
+        "hire_year": 2021,
+        "active": 1,
+    },
+    {
+        "id": 16,
+        "name": "Taka Yamamoto",
+        "department": "Finance",
+        "role": "Junior Analyst",
+        "salary": 66000,
+        "hire_year": 2023,
+        "active": 1,
+    },
+    # Sales (4)
+    {
+        "id": 17,
+        "name": "Marcus Johnson",
+        "department": "Sales",
+        "role": "Sales Director",
+        "salary": 92000,
+        "hire_year": 2015,
+        "active": 1,
+    },
+    {
+        "id": 18,
+        "name": "Elena Petrov",
+        "department": "Sales",
+        "role": "Account Executive",
+        "salary": 78000,
+        "hire_year": 2019,
+        "active": 1,
+    },
+    {
+        "id": 19,
+        "name": "David Nguyen",
+        "department": "Sales",
+        "role": "Account Executive",
+        "salary": 75000,
+        "hire_year": 2020,
+        "active": 1,
+    },
+    {
+        "id": 20,
+        "name": "Fatima Al-Rashid",
+        "department": "Sales",
+        "role": "Sales Representative",
+        "salary": 58000,
+        "hire_year": 2022,
+        "active": 1,
+    },
+]
+
 
 async def seed_database() -> None:
     async with AsyncSessionLocal() as session:
@@ -442,3 +637,17 @@ async def seed_database() -> None:
                 session.add(Recipe(**row))
             await session.commit()
             print("DB seeded with recipes.")
+
+        if (await session.execute(select(Employee))).scalars().first() is None:
+            for row in _SEED_EMPLOYEES:
+                session.add(Employee(**row))
+            await session.commit()
+            print("DB seeded with employees.")
+            await session.commit()
+            print("DB seeded with recipes.")
+
+        if (await session.execute(select(Employee))).scalars().first() is None:
+            for row in _SEED_EMPLOYEES:
+                session.add(Employee(**row))
+            await session.commit()
+            print("DB seeded with employees.")

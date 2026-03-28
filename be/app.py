@@ -10,6 +10,7 @@ Strategies implemented:
   2.6  Read-Through via aiocache @cached decorator
   2.7  Response Caching Middleware (BaseHTTPMiddleware)
   2.8  HTTP Caching with FastAPI (ETag, Cache-Control, 304 Not Modified)  2.9  Async Caching with aiocache (MsgPack, plugins, multi_get/multi_set)
+  2.10 Database Query Caching (hash-keyed SQL result cache, SCAN-safe eviction)
 To add a new strategy:
   1. Create be/routers/sNN_name.py with an APIRouter
   2. Import and include it below with app.include_router(...)
@@ -31,12 +32,13 @@ from routers import (
     s27_middleware,
     s28_http_cache,
     s29_aiocache,
+    s210_db_query_cache,
 )
 
 app = FastAPI(
     title="Caching Showcase API",
-    description="FastAPI backend demonstrating 2.1-2.9 caching strategies",
-    version="2.9.0",
+    description="FastAPI backend demonstrating 2.1-2.10 caching strategies",
+    version="2.10.0",
     lifespan=lifespan,
 )
 
@@ -62,6 +64,7 @@ app.include_router(s26_read_through.router)
 app.include_router(s27_middleware.router)
 app.include_router(s28_http_cache.router)
 app.include_router(s29_aiocache.router)
+app.include_router(s210_db_query_cache.router)
 
 
 @app.get("/")
@@ -79,6 +82,7 @@ async def root():
             "2.7 Response Caching Middleware",
             "2.8 HTTP Caching (ETag, Cache-Control, 304 Not Modified)",
             "2.9 Async aiocache (MsgPack, plugins, multi_get/multi_set)",
+            "2.10 DB Query Caching (hash-keyed SQL result cache)",
         ],
     }
 

@@ -468,6 +468,51 @@
         </div>
       </a>
 
+      <!-- ── Card 2.10 ─────────────────────────────────────────── -->
+      <a href="/strategy/210"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-lime-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-lime-400 leading-none">2.10</span>
+            <span class="badge bg-lime-900 text-lime-300 mt-1">SQL hash key</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">DB Query Caching</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            Cache arbitrary SQL results by hashing query name + bound parameters.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-lime-500 flex-shrink-0"></span>
+              <span><code class="text-lime-300 font-mono text-xs">md5(query+params)</code> — deterministic cache key</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-lime-500 flex-shrink-0"></span>
+              <span>SCAN-safe namespace eviction — never blocks Redis</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">&lt; 1 ms</div>
+              <div class="text-slate-500 mt-0.5">HIT latency</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">120 s</div>
+              <div class="text-slate-500 mt-0.5">TTL</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-lime-400 font-bold">Any SQL</div>
+              <div class="text-slate-500 mt-0.5">cacheable</div>
+            </div>
+          </div>
+          <div class="flex items-center text-lime-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
     </section>
 
     <!-- ── How it works ─────────────────────────────────────────────────────── -->
@@ -585,6 +630,14 @@
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
               <td class="px-4 py-3 text-slate-400 text-xs">Multi-key batch, MsgPack, plugin metrics</td>
+            </tr>
+            <tr class="hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-lime-300 font-mono text-xs">DB Query Cache</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">120 s</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Arbitrary SQL, aggregations, param-keyed results</td>
             </tr>
           </tbody>
         </table>

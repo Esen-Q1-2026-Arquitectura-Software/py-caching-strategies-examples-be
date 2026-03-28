@@ -153,6 +153,11 @@ def strategy_210():
     return render_template("strategy_210.html")
 
 
+@app.get("/strategy/211")
+def strategy_211():
+    return render_template("strategy_211.html")
+
+
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
 
 
@@ -430,6 +435,46 @@ def db_query_stats():
 @app.route("/api/db-query/reset", methods=["POST"])
 def db_query_reset():
     return _proxy("POST", "/v1/db-query/reset")
+
+
+# ── Stampede Prevention (2.11) proxy ─────────────────────────────────────────
+
+
+@app.get("/api/stampede/trending/unsafe")
+def stampede_trending_unsafe():
+    return _proxy("GET", "/v1/stampede/trending/unsafe")
+
+
+@app.get("/api/stampede/trending/safe")
+def stampede_trending_safe():
+    return _proxy("GET", "/v1/stampede/trending/safe")
+
+
+@app.route("/api/stampede/simulate", methods=["POST"])
+def stampede_simulate():
+    count = request.args.get("count", "10")
+    mode = request.args.get("mode", "safe")
+    return _proxy("POST", f"/v1/stampede/simulate?count={count}&mode={mode}")
+
+
+@app.get("/api/stampede/lock-state")
+def stampede_lock_state():
+    return _proxy("GET", "/v1/stampede/lock-state")
+
+
+@app.route("/api/stampede/cache", methods=["DELETE"])
+def stampede_clear_cache():
+    return _proxy("DELETE", "/v1/stampede/cache")
+
+
+@app.get("/api/stampede/stats")
+def stampede_stats():
+    return _proxy("GET", "/v1/stampede/stats")
+
+
+@app.route("/api/stampede/reset", methods=["POST"])
+def stampede_reset():
+    return _proxy("POST", "/v1/stampede/reset")
 
 
 if __name__ == "__main__":

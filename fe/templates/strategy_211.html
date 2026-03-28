@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.11 — Cache Stampede Prevention</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn { transition: all .15s ease; }
+    .tab-btn.active { background: rgb(66 32 6); color: rgb(253 224 71); border-color: rgb(161 98 7); }
+    .tab-btn:not(.active) { color: #94a3b8; border-color: transparent; }
+    .tab-btn:not(.active):hover { color: #e2e8f0; background: rgb(30 41 59); }
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .hit  { background:#052e16; border-color:#16a34a; color:#4ade80; }
+    .miss { background:#450a0a; border-color:#dc2626; color:#f87171; }
+    .wait { background:#1c1917; border-color:#ca8a04; color:#fbbf24; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    table td, table th { padding: .45rem .75rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .72rem; }
+    .lock-dot { display:inline-block; width:10px; height:10px; border-radius:50%; }
+    .lock-held  { background:#ef4444; box-shadow:0 0 8px #ef4444; }
+    .lock-free  { background:#22c55e; box-shadow:0 0 8px #22c55e; }
+    .bar { height:18px; border-radius:4px; transition: width 0.4s ease; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-500 hover:text-slate-300 text-sm transition-colors">← Back</a>
+        <span class="text-slate-700">|</span>
+        <span class="text-yellow-400 font-bold text-sm font-mono">2.11</span>
+        <span class="text-slate-300 font-semibold text-sm">Cache Stampede Prevention (Mutex Lock)</span>
+      </div>
+      <span class="text-xs px-2.5 py-1 rounded-full bg-yellow-900 text-yellow-300 font-semibold">Redis NX lock</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Intro -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+      <h1 class="text-xl font-bold text-white">Cache Stampede Prevention</h1>
+      <p class="text-slate-400 text-sm leading-relaxed">
+        When a popular key expires, a burst of concurrent requests all see a cache miss and simultaneously
+        query the database — the <span class="text-yellow-300 font-semibold">stampede effect</span>.
+        The fix: a distributed Redis NX lock ensures only <em>one</em> request rebuilds the cache
+        while all others spin-wait and then read the freshly populated value.
+      </p>
+      <div class="bg-slate-800 rounded-xl p-4 space-y-1">
+        <div class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">Core pattern</div>
+        <pre class="text-yellow-300 text-xs leading-relaxed">cached = await redis.get(key)
+if cached:  return json.loads(cached)              # fast path
+
+acquired = await redis.set(lock_key, "1", nx=True, ex=10)   # atomic
+
+if acquired:
+    try:
+        result = await expensive_db_call()         # only ONE request runs this
+        await redis.setex(key, ttl, json.dumps(result))
+        return result
+    finally:
+        await redis.delete(lock_key)               # always release
+else:
+    for _ in range(20):                            # spin-wait up to 2 s
+        await asyncio.sleep(0.1)
+        cached = await redis.get(key)
+        if cached:  return json.loads(cached)      # lock holder wrote it
+    return await expensive_db_call()               # timeout fallback</pre>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 border-b border-slate-800 pb-px">
+      <button onclick="showTab('demo')"    id="tab-demo"    class="tab-btn active px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Live Demo</button>
+      <button onclick="showTab('sim')"     id="tab-sim"     class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Simulation</button>
+      <button onclick="showTab('lock')"    id="tab-lock"    class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Lock Inspector</button>
+      <button onclick="showTab('stats')"   id="tab-stats"   class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Stats</button>
+    </div>
+
+    <!-- ── Tab: Live Demo ──────────────────────────────────────────────── -->
+    <div id="pane-demo" class="space-y-5 fade-in">
+      <p class="text-slate-400 text-sm">
+        Manually fetch the trending data with or without lock protection.
+        Click "Clear Cache" first, then rapidly click both buttons to observe the difference.
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+        <!-- Unsafe -->
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-red-400 font-bold text-sm">⚠ Without Lock (Unsafe)</h3>
+              <p class="text-slate-500 text-xs mt-0.5">No protection — stampede possible</p>
+            </div>
+            <span id="badge-unsafe" class="hidden text-xs font-bold px-2 py-0.5 rounded border"></span>
+          </div>
+          <button onclick="fetchUnsafe()"
+            class="w-full py-2 rounded-lg bg-red-900 hover:bg-red-800 text-red-300 text-sm font-semibold transition-colors">
+            Fetch Trending (unsafe)
+          </button>
+          <div id="result-unsafe" class="hidden bg-slate-800 rounded-xl p-3 text-xs mono space-y-1"></div>
+        </div>
+
+        <!-- Safe -->
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-yellow-400 font-bold text-sm">🔒 With Mutex Lock (Safe)</h3>
+              <p class="text-slate-500 text-xs mt-0.5">Stampede prevented — one builder, others wait</p>
+            </div>
+            <span id="badge-safe" class="hidden text-xs font-bold px-2 py-0.5 rounded border"></span>
+          </div>
+          <button onclick="fetchSafe()"
+            class="w-full py-2 rounded-lg bg-yellow-900 hover:bg-yellow-800 text-yellow-300 text-sm font-semibold transition-colors">
+            Fetch Trending (safe)
+          </button>
+          <div id="result-safe" class="hidden bg-slate-800 rounded-xl p-3 text-xs mono space-y-1"></div>
+        </div>
+
+      </div>
+
+      <!-- Clear + live lock indicator -->
+      <div class="flex items-center gap-4">
+        <button onclick="clearCache()"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-semibold transition-colors">
+          🗑 Clear Cache (both keys)
+        </button>
+        <div class="flex items-center gap-2 text-xs text-slate-400">
+          <span class="lock-dot" id="live-lock-dot"></span>
+          <span id="live-lock-label">—</span>
+        </div>
+        <div id="clear-msg" class="text-xs text-yellow-400 hidden"></div>
+      </div>
+
+      <!-- Trending table (safe path result) -->
+      <div id="trending-table" class="hidden bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-3">Last Fetched Trending Topics</div>
+        <table class="w-full text-sm text-left">
+          <thead class="text-xs uppercase text-slate-500">
+            <tr><th>Rank</th><th>Topic</th><th>Score</th><th>Δ</th></tr>
+          </thead>
+          <tbody id="trending-body" class="divide-y divide-slate-800 text-slate-300"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Tab: Simulation ─────────────────────────────────────────────── -->
+    <div id="pane-sim" class="hidden space-y-5 fade-in">
+      <p class="text-slate-400 text-sm">
+        Fire N concurrent requests against a cold cache and observe how many DB calls are made.
+        <span class="text-red-400 font-semibold">Unsafe</span>: DB calls ≈ N (stampede).
+        <span class="text-yellow-400 font-semibold">Safe</span>: DB calls = 1 (lock protected).
+      </p>
+
+      <!-- Controls -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex flex-wrap items-end gap-4">
+          <div class="space-y-1.5">
+            <label class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Concurrent requests</label>
+            <input id="sim-count" type="range" min="2" max="30" value="10"
+              oninput="document.getElementById('sim-count-val').textContent=this.value"
+              class="w-40 accent-yellow-400">
+            <span id="sim-count-val" class="text-yellow-400 font-bold text-sm ml-1">10</span>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="runSim('unsafe')"
+              class="px-5 py-2 rounded-lg bg-red-900 hover:bg-red-800 text-red-300 text-sm font-semibold transition-colors">
+              Run Unsafe
+            </button>
+            <button onclick="runSim('safe')"
+              class="px-5 py-2 rounded-lg bg-yellow-900 hover:bg-yellow-800 text-yellow-300 text-sm font-semibold transition-colors">
+              Run Safe
+            </button>
+          </div>
+        </div>
+
+        <!-- Result bar chart -->
+        <div id="sim-result" class="hidden space-y-3">
+          <div class="grid grid-cols-2 gap-4 text-center">
+            <div class="bg-slate-800 rounded-xl p-3">
+              <div class="text-2xl font-black" id="sim-db-calls">—</div>
+              <div class="text-xs text-slate-400 mt-1">DB calls made</div>
+              <div class="text-xs font-semibold mt-1" id="sim-db-expected"></div>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-3">
+              <div class="text-2xl font-black text-emerald-400" id="sim-cache-hits">—</div>
+              <div class="text-xs text-slate-400 mt-1">Cache hits (waited OK)</div>
+              <div class="text-xs font-semibold text-emerald-400 mt-1" id="sim-elapsed"></div>
+            </div>
+          </div>
+
+          <!-- Source breakdown bar -->
+          <div class="space-y-1.5">
+            <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider">Request sources</div>
+            <div class="flex rounded-lg overflow-hidden h-5 text-xs font-bold" id="sim-bar">
+            </div>
+            <div class="flex gap-4 text-xs text-slate-400" id="sim-bar-legend"></div>
+          </div>
+
+          <div id="sim-verdict" class="rounded-xl p-3 text-sm font-semibold text-center"></div>
+
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mt-2">Lock status breakdown</div>
+          <div id="sim-lock-breakdown" class="flex flex-wrap gap-2"></div>
+        </div>
+      </div>
+
+      <!-- Side-by-side comparison table -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-3">Comparison</div>
+        <table class="w-full text-sm text-left">
+          <thead class="text-xs text-slate-500 uppercase border-b border-slate-800">
+            <tr>
+              <th class="pb-2 pr-4">Scenario</th>
+              <th class="pb-2 pr-4">10 concurrent requests</th>
+              <th class="pb-2">Outcome</th>
+            </tr>
+          </thead>
+          <tbody class="text-slate-300 divide-y divide-slate-800">
+            <tr>
+              <td class="py-2 pr-4 font-semibold text-red-400">Without lock</td>
+              <td class="py-2 pr-4 text-slate-400 text-xs">All see MISS → all call DB</td>
+              <td class="py-2 text-red-400 text-xs font-bold">⚠ 10 DB calls — stampede!</td>
+            </tr>
+            <tr>
+              <td class="py-2 pr-4 font-semibold text-yellow-400">With NX lock</td>
+              <td class="py-2 pr-4 text-slate-400 text-xs">1 acquires lock → 9 spin-wait → read cache</td>
+              <td class="py-2 text-emerald-400 text-xs font-bold">✓ 1 DB call — protected!</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Tab: Lock Inspector ─────────────────────────────────────────── -->
+    <div id="pane-lock" class="hidden space-y-5 fade-in">
+      <p class="text-slate-400 text-sm">
+        Live view of the Redis lock key and cache key TTLs. The lock key appears only
+        during the 150 ms window when the DB call is in progress.
+      </p>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <!-- Auto-poll toggle -->
+        <div class="flex items-center gap-3">
+          <button onclick="togglePoll()" id="poll-btn"
+            class="px-4 py-1.5 rounded-lg bg-yellow-900 hover:bg-yellow-800 text-yellow-300 text-xs font-semibold transition-colors">
+            ▶ Start polling (500 ms)
+          </button>
+          <span class="text-xs text-slate-500">Poll to watch the lock appear and disappear in real time.</span>
+        </div>
+
+        <!-- Lock indicator -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="bg-slate-800 rounded-xl p-4 flex flex-col items-center gap-2">
+            <div class="flex items-center gap-2">
+              <span class="lock-dot lock-free" id="insp-lock-dot"></span>
+              <span class="font-bold text-sm" id="insp-lock-label">Lock free</span>
+            </div>
+            <div class="text-xs text-slate-500 text-center">Redis NX lock key</div>
+            <div class="mono text-xs text-slate-400 text-center break-all" id="insp-lock-key">sp211:lock:trending</div>
+            <div class="text-xs text-yellow-300" id="insp-lock-ttl"></div>
+          </div>
+
+          <div class="bg-slate-800 rounded-xl p-4 flex flex-col items-center gap-2">
+            <div class="text-2xl font-black text-yellow-400" id="insp-safe-ttl">—</div>
+            <div class="text-xs text-slate-400">safe cache TTL (s)</div>
+            <div class="w-full bg-slate-700 rounded-full h-2 mt-1">
+              <div class="bar bg-yellow-500" id="insp-safe-bar" style="width:0%"></div>
+            </div>
+            <div class="text-xs text-slate-500">sp211:trending:safe</div>
+          </div>
+
+          <div class="bg-slate-800 rounded-xl p-4 flex flex-col items-center gap-2">
+            <div class="text-2xl font-black text-red-400" id="insp-unsafe-ttl">—</div>
+            <div class="text-xs text-slate-400">unsafe cache TTL (s)</div>
+            <div class="w-full bg-slate-700 rounded-full h-2 mt-1">
+              <div class="bar bg-red-500" id="insp-unsafe-bar" style="width:0%"></div>
+            </div>
+            <div class="text-xs text-slate-500">sp211:trending:unsafe</div>
+          </div>
+        </div>
+
+        <!-- Raw lock state JSON -->
+        <div>
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Raw /lock-state response</div>
+          <pre id="lock-raw" class="bg-slate-800 rounded-xl p-3 text-xs text-yellow-300 min-h-16">—</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: Stats ──────────────────────────────────────────────────── -->
+    <div id="pane-stats" class="hidden space-y-5 fade-in">
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-yellow-400" id="st-total-safe">—</div>
+          <div class="text-xs text-slate-400 mt-1">Total safe</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-red-400" id="st-total-unsafe">—</div>
+          <div class="text-xs text-slate-400 mt-1">Total unsafe</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-emerald-400" id="st-hr-safe">—</div>
+          <div class="text-xs text-slate-400 mt-1">Safe hit rate %</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-emerald-400" id="st-hr-unsafe">—</div>
+          <div class="text-xs text-slate-400 mt-1">Unsafe hit rate %</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-slate-200" id="st-db-calls">—</div>
+          <div class="text-xs text-slate-400 mt-1">Total DB calls</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-yellow-400" id="st-lock-acq">—</div>
+          <div class="text-xs text-slate-400 mt-1">Locks acquired</div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-center">
+          <div class="text-2xl font-black text-amber-400" id="st-lock-wait">—</div>
+          <div class="text-xs text-slate-400 mt-1">Requests waited</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <button onclick="loadStats()"
+          class="px-4 py-2 rounded-lg bg-yellow-900 hover:bg-yellow-800 text-yellow-300 text-sm font-semibold transition-colors">
+          Refresh Stats
+        </button>
+        <button onclick="resetAll()"
+          class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-semibold transition-colors">
+          Reset All
+        </button>
+      </div>
+
+      <div>
+        <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Full stats response</div>
+        <pre id="stats-raw" class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-xs text-yellow-300 overflow-auto max-h-80">—</pre>
+      </div>
+
+      <!-- How it works detail -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <h3 class="text-sm font-bold text-white">How the lock prevents stampede</h3>
+        <div class="space-y-2 text-sm text-slate-400">
+          <div class="flex gap-3">
+            <span class="text-yellow-400 font-bold shrink-0">①</span>
+            <span>All N concurrent requests check the cache — all see a <span class="text-red-400">MISS</span> (key expired or cold).</span>
+          </div>
+          <div class="flex gap-3">
+            <span class="text-yellow-400 font-bold shrink-0">②</span>
+            <span>All N race to acquire the lock with <code class="text-yellow-300 font-mono text-xs">SET lock_key "1" NX EX 10</code>. Only <strong>one</strong> wins (atomic Redis operation).</span>
+          </div>
+          <div class="flex gap-3">
+            <span class="text-yellow-400 font-bold shrink-0">③</span>
+            <span>The <span class="text-yellow-400">winner</span> runs the expensive DB call (150 ms), populates the cache, then deletes the lock.</span>
+          </div>
+          <div class="flex gap-3">
+            <span class="text-yellow-400 font-bold shrink-0">④</span>
+            <span>The <span class="text-amber-400">N-1 waiters</span> spin-wait (<code class="text-yellow-300 font-mono text-xs">asyncio.sleep(0.1)</code>) and retry the cache every 100 ms.</span>
+          </div>
+          <div class="flex gap-3">
+            <span class="text-yellow-400 font-bold shrink-0">⑤</span>
+            <span>Waiters find the cache populated ≈ 150 ms later — <span class="text-emerald-400">1 DB call total</span> vs N without protection.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+  const API = '';
+
+  // ── Tab switching ─────────────────────────────────────────────────────────
+  function showTab(name) {
+    ['demo','sim','lock','stats'].forEach(t => {
+      document.getElementById(`pane-${t}`).classList.toggle('hidden', t !== name);
+      document.getElementById(`pane-${t}`).classList.toggle('fade-in', t === name);
+      document.getElementById(`tab-${t}`).classList.toggle('active', t === name);
+    });
+    if (name === 'stats') loadStats();
+    if (name === 'lock')  pollOnce();
+  }
+
+  // ── Live Demo ─────────────────────────────────────────────────────────────
+  function setBadge(id, cache) {
+    const el = document.getElementById(id);
+    el.classList.remove('hidden');
+    if (cache === 'HIT') {
+      el.className = 'text-xs font-bold px-2 py-0.5 rounded border hit';
+      el.textContent = 'HIT';
+    } else {
+      el.className = 'text-xs font-bold px-2 py-0.5 rounded border miss';
+      el.textContent = 'MISS';
+    }
+  }
+
+  async function fetchUnsafe() {
+    try {
+      const r = await fetch(`${API}/api/stampede/trending/unsafe`);
+      const d = await r.json();
+      setBadge('badge-unsafe', d.cache);
+      const el = document.getElementById('result-unsafe');
+      el.classList.remove('hidden');
+      el.innerHTML = `
+        <div class="flex gap-6">
+          <div><span class="text-slate-500">cache:</span> <span class="${d.cache==='HIT'?'text-emerald-400':'text-red-400'} font-bold">${d.cache}</span></div>
+          <div><span class="text-slate-500">latency:</span> <span class="text-slate-200">${d.latency_ms} ms</span></div>
+          <div><span class="text-slate-500">lock_status:</span> <span class="text-slate-400">${d.lock_status}</span></div>
+        </div>
+        <div class="text-slate-500 text-xs mt-1">computed_at: ${new Date(d.computed_at*1000).toLocaleTimeString()}</div>
+      `;
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  async function fetchSafe() {
+    try {
+      const r = await fetch(`${API}/api/stampede/trending/safe`);
+      const d = await r.json();
+      setBadge('badge-safe', d.cache);
+      const el = document.getElementById('result-safe');
+      el.classList.remove('hidden');
+      el.innerHTML = `
+        <div class="flex gap-6 flex-wrap">
+          <div><span class="text-slate-500">cache:</span> <span class="${d.cache==='HIT'?'text-emerald-400':'text-red-400'} font-bold">${d.cache}</span></div>
+          <div><span class="text-slate-500">latency:</span> <span class="text-slate-200">${d.latency_ms} ms</span></div>
+          <div><span class="text-slate-500">lock_status:</span> <span class="text-yellow-300">${d.lock_status}</span></div>
+        </div>
+        <div class="text-slate-500 text-xs mt-1">computed_at: ${new Date(d.computed_at*1000).toLocaleTimeString()}</div>
+      `;
+      // Populate trending table
+      if (d.trending) {
+        const tbody = document.getElementById('trending-body');
+        tbody.innerHTML = d.trending.map(t => `
+          <tr class="hover:bg-slate-800 transition-colors">
+            <td class="text-yellow-400 font-bold">#${t.rank}</td>
+            <td class="text-slate-200">${t.topic}</td>
+            <td class="text-slate-300">${t.score}</td>
+            <td class="${t.delta.startsWith('+')?'text-emerald-400':'text-red-400'}">${t.delta}</td>
+          </tr>
+        `).join('');
+        document.getElementById('trending-table').classList.remove('hidden');
+      }
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  async function clearCache() {
+    try {
+      const r = await fetch(`${API}/api/stampede/cache`, { method: 'DELETE' });
+      const d = await r.json();
+      const msg = document.getElementById('clear-msg');
+      msg.classList.remove('hidden');
+      msg.textContent = `Cleared ${d.deleted} key(s)`;
+      setTimeout(() => msg.classList.add('hidden'), 3000);
+      pollOnce();
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  // ── Live lock dot (demo tab) ──────────────────────────────────────────────
+  async function pollOnce() {
+    try {
+      const r = await fetch(`${API}/api/stampede/lock-state`);
+      const d = await r.json();
+      updateLockDisplay(d);
+    } catch {}
+  }
+
+  function updateLockDisplay(d) {
+    // Demo tab small indicator
+    const dot = document.getElementById('live-lock-dot');
+    const lbl = document.getElementById('live-lock-label');
+    if (d.lock_held) {
+      dot.className = 'lock-dot lock-held';
+      lbl.textContent = `Lock HELD (${d.lock_ttl_s}s)`;
+      lbl.className = 'text-xs text-red-400';
+    } else {
+      dot.className = 'lock-dot lock-free';
+      lbl.textContent = 'Lock free';
+      lbl.className = 'text-xs text-emerald-400';
+    }
+
+    // Lock inspector tab
+    const inspDot = document.getElementById('insp-lock-dot');
+    const inspLbl = document.getElementById('insp-lock-label');
+    const inspTtl = document.getElementById('insp-lock-ttl');
+    if (d.lock_held) {
+      inspDot.className = 'lock-dot lock-held';
+      inspLbl.textContent = 'Lock HELD';
+      inspLbl.className = 'font-bold text-sm text-red-400';
+      inspTtl.textContent = `auto-expires in ${d.lock_ttl_s}s`;
+    } else {
+      inspDot.className = 'lock-dot lock-free';
+      inspLbl.textContent = 'Lock free';
+      inspLbl.className = 'font-bold text-sm text-emerald-400';
+      inspTtl.textContent = '';
+    }
+
+    const MAX_TTL = 30;
+    const safeTtl = d.cache_safe_populated ? d.cache_safe_ttl_s : 0;
+    const unsafeTtl = d.cache_unsafe_populated ? d.cache_unsafe_ttl_s : 0;
+    document.getElementById('insp-safe-ttl').textContent = safeTtl ?? '—';
+    document.getElementById('insp-unsafe-ttl').textContent = unsafeTtl ?? '—';
+    document.getElementById('insp-safe-bar').style.width = `${Math.min(100,(safeTtl/MAX_TTL)*100)}%`;
+    document.getElementById('insp-unsafe-bar').style.width = `${Math.min(100,(unsafeTtl/MAX_TTL)*100)}%`;
+    document.getElementById('lock-raw').textContent = JSON.stringify(d, null, 2);
+  }
+
+  // Poll timer
+  let _pollTimer = null;
+  function togglePoll() {
+    const btn = document.getElementById('poll-btn');
+    if (_pollTimer) {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+      btn.textContent = '▶ Start polling (500 ms)';
+    } else {
+      _pollTimer = setInterval(pollOnce, 500);
+      btn.textContent = '⏹ Stop polling';
+      pollOnce();
+    }
+  }
+
+  // ── Simulation ────────────────────────────────────────────────────────────
+  async function runSim(mode) {
+    const count = document.getElementById('sim-count').value;
+    try {
+      const r = await fetch(`${API}/api/stampede/simulate?count=${count}&mode=${mode}`, { method: 'POST' });
+      const d = await r.json();
+
+      document.getElementById('sim-result').classList.remove('hidden');
+      const isUnsafe = mode === 'unsafe';
+
+      const dbEl = document.getElementById('sim-db-calls');
+      dbEl.textContent = d.db_calls_made;
+      dbEl.className = `text-2xl font-black ${isUnsafe ? 'text-red-400' : 'text-yellow-400'}`;
+
+      document.getElementById('sim-db-expected').textContent =
+        `expected: ${d.db_calls_expected}`;
+      document.getElementById('sim-db-expected').className =
+        `text-xs font-semibold mt-1 ${isUnsafe ? 'text-red-400' : 'text-emerald-400'}`;
+
+      document.getElementById('sim-cache-hits').textContent = d.cache_hits;
+      document.getElementById('sim-elapsed').textContent = `${d.elapsed_ms} ms total`;
+
+      // Bar
+      const total = d.concurrent_requests;
+      const dbPct = ((d.db_calls_made / total) * 100).toFixed(0);
+      const cachePct = ((d.cache_hits / total) * 100).toFixed(0);
+      const bar = document.getElementById('sim-bar');
+      bar.innerHTML = `
+        ${d.db_calls_made > 0 ? `<div style="width:${dbPct}%" class="bg-red-600 flex items-center justify-center text-white text-xs font-bold">${d.db_calls_made}</div>` : ''}
+        ${d.cache_hits > 0 ? `<div style="width:${cachePct}%" class="bg-emerald-600 flex items-center justify-center text-white text-xs font-bold">${d.cache_hits}</div>` : ''}
+      `;
+      document.getElementById('sim-bar-legend').innerHTML = `
+        <span><span class="inline-block w-3 h-3 bg-red-600 rounded mr-1"></span>DB calls: ${d.db_calls_made}</span>
+        <span><span class="inline-block w-3 h-3 bg-emerald-600 rounded mr-1"></span>Cache hits: ${d.cache_hits}</span>
+      `;
+
+      // Verdict
+      const verdict = document.getElementById('sim-verdict');
+      if (mode === 'safe' && d.stampede_prevented) {
+        verdict.className = 'rounded-xl p-3 text-sm font-semibold text-center bg-emerald-950 border border-emerald-800 text-emerald-400';
+        verdict.textContent = `✓ Stampede prevented! ${total} concurrent requests → only 1 DB call. ${total-1} requests waited and read from cache.`;
+      } else if (mode === 'unsafe') {
+        verdict.className = 'rounded-xl p-3 text-sm font-semibold text-center bg-red-950 border border-red-800 text-red-400';
+        verdict.textContent = `⚠ ${d.db_calls_made} of ${total} requests hit the database simultaneously — stampede!`;
+      } else {
+        verdict.className = 'rounded-xl p-3 text-sm font-semibold text-center bg-amber-950 border border-amber-800 text-amber-400';
+        verdict.textContent = `Lock helped: ${d.db_calls_made} DB calls (${total} requests, ${d.cache_hits} from cache).`;
+      }
+
+      // Lock status breakdown
+      const breakdown = document.getElementById('sim-lock-breakdown');
+      const counts = {};
+      (d.lock_statuses || []).forEach(s => { if (s) counts[s] = (counts[s]||0)+1; });
+      breakdown.innerHTML = Object.entries(counts).map(([k,v]) => {
+        const color = k === 'acquired' ? 'text-yellow-300 bg-yellow-950 border-yellow-800'
+                    : k === 'waited' ? 'text-amber-300 bg-amber-950 border-amber-800'
+                    : k === 'not_needed' ? 'text-emerald-300 bg-emerald-950 border-emerald-800'
+                    : 'text-slate-300 bg-slate-800 border-slate-700';
+        return `<span class="text-xs font-semibold px-2 py-0.5 rounded border ${color}">${k}: ${v}</span>`;
+      }).join('');
+
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  async function loadStats() {
+    try {
+      const r = await fetch(`${API}/api/stampede/stats`);
+      const d = await r.json();
+      const m = d.metrics;
+      document.getElementById('st-total-safe').textContent = m.total_safe;
+      document.getElementById('st-total-unsafe').textContent = m.total_unsafe;
+      document.getElementById('st-hr-safe').textContent = d.hit_rate_safe_pct + '%';
+      document.getElementById('st-hr-unsafe').textContent = d.hit_rate_unsafe_pct + '%';
+      document.getElementById('st-db-calls').textContent = m.db_calls;
+      document.getElementById('st-lock-acq').textContent = m.lock_acquired;
+      document.getElementById('st-lock-wait').textContent = m.lock_waited;
+      document.getElementById('stats-raw').textContent = JSON.stringify(d, null, 2);
+    } catch(e) {
+      document.getElementById('stats-raw').textContent = 'Error: ' + e;
+    }
+  }
+
+  async function resetAll() {
+    if (!confirm('Reset all metrics and clear all cache keys?')) return;
+    await fetch(`${API}/api/stampede/reset`, { method: 'POST' });
+    await loadStats();
+    pollOnce();
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  pollOnce();
+  </script>
+</body>
+</html>

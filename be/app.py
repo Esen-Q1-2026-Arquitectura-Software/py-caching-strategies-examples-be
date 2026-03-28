@@ -33,12 +33,13 @@ from routers import (
     s28_http_cache,
     s29_aiocache,
     s210_db_query_cache,
+    s211_stampede,
 )
 
 app = FastAPI(
     title="Caching Showcase API",
-    description="FastAPI backend demonstrating 2.1-2.10 caching strategies",
-    version="2.10.0",
+    description="FastAPI backend demonstrating 2.1-2.11 caching strategies",
+    version="2.11.0",
     lifespan=lifespan,
 )
 
@@ -65,6 +66,7 @@ app.include_router(s27_middleware.router)
 app.include_router(s28_http_cache.router)
 app.include_router(s29_aiocache.router)
 app.include_router(s210_db_query_cache.router)
+app.include_router(s211_stampede.router)
 
 
 @app.get("/")
@@ -83,6 +85,7 @@ async def root():
             "2.8 HTTP Caching (ETag, Cache-Control, 304 Not Modified)",
             "2.9 Async aiocache (MsgPack, plugins, multi_get/multi_set)",
             "2.10 DB Query Caching (hash-keyed SQL result cache)",
+            "2.11 Cache Stampede Prevention (Mutex Lock)",
         ],
     }
 

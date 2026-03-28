@@ -513,6 +513,51 @@
         </div>
       </a>
 
+      <!-- ── Card 2.11 ─────────────────────────────────────── -->
+      <a href="/strategy/211"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-yellow-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-yellow-400 leading-none">2.11</span>
+            <span class="badge bg-yellow-900 text-yellow-300 mt-1">Redis NX lock</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">Stampede Prevention</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            Distributed mutex lock prevents concurrent requests from all hitting the DB on a cold key.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0"></span>
+              <span><code class="text-yellow-300 font-mono text-xs">SET lock NX EX 10</code> — atomic lock acquisition</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0"></span>
+              <span>Spin-wait pattern — N requests, 1 DB call</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">&lt; 1 ms</div>
+              <div class="text-slate-500 mt-0.5">HIT latency</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">30 s</div>
+              <div class="text-slate-500 mt-0.5">Cache TTL</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-yellow-400 font-bold">1 DB call</div>
+              <div class="text-slate-500 mt-0.5">per burst</div>
+            </div>
+          </div>
+          <div class="flex items-center text-yellow-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
     </section>
 
     <!-- ── How it works ─────────────────────────────────────────────────────── -->
@@ -638,6 +683,14 @@
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
               <td class="px-4 py-3 text-slate-400 text-xs">Arbitrary SQL, aggregations, param-keyed results</td>
+            </tr>
+            <tr class="hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-yellow-300 font-mono text-xs">Stampede Lock</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">30 s</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes (NX lock)</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">High-concurrency, popular expiring keys</td>
             </tr>
           </tbody>
         </table>

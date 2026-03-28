@@ -328,7 +328,59 @@
         </div>
       </a>
 
-    </section> ───────────────────────────────────────────────────── -->
+    </section>
+
+    <!-- ── Row 3: Card 2.7 ──────────────────────────────────────────────────── -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+      <!-- ── Card 2.7 ──────────────────────────────────────────── -->
+      <a href="/strategy/27"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-indigo-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-indigo-400 leading-none">2.7</span>
+            <span class="badge bg-indigo-900 text-indigo-300 mt-1">Middleware</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">Response Cache Middleware</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            Caches full HTTP responses at the ASGI layer — routes have <em>zero</em> cache code.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0"></span>
+              <span><code class="text-indigo-300 font-mono text-xs">BaseHTTPMiddleware</code> intercepts every GET request</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0"></span>
+              <span><code class="text-indigo-300 font-mono text-xs">X-Cache: HIT</code> / <code class="text-indigo-300 font-mono text-xs">MISS</code> header on every response</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">&lt; 2 ms</div>
+              <div class="text-slate-500 mt-0.5">HIT latency</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">30 s</div>
+              <div class="text-slate-500 mt-0.5">TTL</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-indigo-400 font-bold">All</div>
+              <div class="text-slate-500 mt-0.5">routes</div>
+            </div>
+          </div>
+          <div class="flex items-center text-indigo-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
+    </section>
+
+    <!-- ── How it works ─────────────────────────────────────────────────────── -->
     <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
       <h2 class="text-base font-bold text-slate-200 mb-4">How each demo works</h2>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
@@ -356,8 +408,8 @@
       </div>
     </section>
 
-    <!-- ── Comparison table ───────────────────────────────────────────────── -->
-    <section>
+    <!-- ── How it works ──────────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
       <h2 class="text-base font-bold text-slate-200 mb-4">Strategy Comparison</h2>
       <div class="overflow-x-auto rounded-xl border border-slate-800">
         <table class="w-full text-sm text-left">
@@ -419,6 +471,22 @@
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
               <td class="px-4 py-3 text-amber-400 text-xs">Risk*</td>
               <td class="px-4 py-3 text-slate-400 text-xs">High-throughput events, analytics logs</td>
+            </tr>
+            <tr class="hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-teal-300 font-mono text-xs">Read-Through</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">240 s</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes (atomic)</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Read-heavy, clean endpoint code, aiocache</td>
+            </tr>
+            <tr class="hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-indigo-300 font-mono text-xs">Resp. Middleware</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">30 s</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">All GET routes, zero per-route cache code</td>
             </tr>
           </tbody>
         </table>

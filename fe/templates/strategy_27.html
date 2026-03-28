@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.7 Response Caching Middleware — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">
+          ← Back
+        </a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-indigo-400 font-black text-lg">2.7</span>
+          <span class="text-white font-bold text-lg ml-2">FastAPI Response Caching Middleware</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-indigo-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-indigo-300 mb-3">What is Response Caching Middleware?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        A <strong class="text-slate-200">Starlette middleware</strong> (<code class="text-indigo-300 font-mono text-xs">BaseHTTPMiddleware</code>)
+        wraps the entire FastAPI request/response pipeline. Before a GET request reaches any route handler,
+        the middleware checks Redis for a cached response. On a <strong class="text-emerald-400">HIT</strong>
+        it returns immediately — the route handler body <em>never runs</em>. On a
+        <strong class="text-amber-400">MISS</strong> it calls the handler, stores the full JSON response in Redis,
+        and returns it with an <code class="text-indigo-300 font-mono text-xs">X-Cache: MISS</code> header.
+        Every subsequent request gets <code class="text-indigo-300 font-mono text-xs">X-Cache: HIT</code> until TTL expires.
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-indigo-400 font-semibold">Key benefit</div>
+          <div class="text-slate-300">All GET routes in the namespace get caching for free —
+            <strong>zero lines</strong> of cache code in any route handler.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-indigo-400 font-semibold">HIT path</div>
+          <div class="text-slate-300">Middleware reads Redis, reconstructs HTTP response. Route handler never executes. &lt; 2 ms.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-indigo-400 font-semibold">MISS path</div>
+          <div class="text-slate-300">Middleware calls handler (DB query ~150 ms), streams body into Redis, returns with
+            <code class="font-mono text-indigo-300">X-Cache: MISS</code>.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Flow diagram ───────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-indigo-950 to-slate-900 border-b border-indigo-900 px-5 py-4">
+        <h3 class="text-indigo-300 font-bold text-base">Middleware Request Flow</h3>
+        <p class="text-slate-400 text-xs mt-1">
+          TTL: <code class="text-slate-200 font-mono">30 s</code> — Key prefix: <code class="text-slate-200 font-mono">mc:</code> — Scope: <code class="text-slate-200 font-mono">/v1/middleware/*</code>
+        </p>
+      </div>
+      <div class="p-5">
+        <div class="bg-slate-800 rounded-xl p-4 text-xs font-mono leading-loose">
+          <div class="mb-3">
+            <span class="text-indigo-300 font-bold">GET /v1/middleware/catalog</span>
+            <span class="text-slate-500 ml-2">(route handler — zero Redis commands)</span>
+          </div>
+          <div class="space-y-1 text-slate-400 pl-4 border-l-2 border-indigo-800">
+            <div><span class="text-indigo-400">1.</span> <span class="text-slate-300">ResponseCacheMiddleware.dispatch(request)</span> <span class="text-slate-500 ml-2">← runs before any route</span></div>
+            <div><span class="text-indigo-400">2.</span> <span class="text-slate-300">cache_key = "mc:/v1/middleware/catalog"</span></div>
+            <div><span class="text-indigo-400">3a.</span> <span class="text-emerald-400">HIT:</span>  <span class="text-slate-300">redis.GET mc:/v1/middleware/catalog</span>  <span class="text-slate-500 ml-2">→ Response(X-Cache: HIT) &lt; 2 ms — handler skipped</span></div>
+            <div><span class="text-indigo-400">3b.</span> <span class="text-amber-400">MISS:</span> <span class="text-slate-300">call_next(request)</span>  <span class="text-slate-500 ml-2">→ route handler runs (~150 ms DB)</span></div>
+            <div><span class="text-indigo-400">3c.</span> <span class="text-slate-300">redis.SETEX mc:... 30 &lt;response body&gt;</span> <span class="text-slate-500 ml-2">← stored by middleware</span></div>
+            <div><span class="text-indigo-400">4.</span>  <span class="text-slate-300">return Response(X-Cache: MISS)</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Code comparison ───────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="border-b border-slate-800 px-5 py-4">
+        <h3 class="text-slate-200 font-bold text-base">Middleware vs Cache-Aside</h3>
+        <p class="text-slate-400 text-xs mt-1">Same caching outcome — completely different ownership of cache logic</p>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800">
+        <div class="p-5">
+          <div class="text-indigo-400 font-semibold text-xs mb-3 uppercase tracking-wider">2.7 Response Middleware (this demo)</div>
+          <pre class="text-xs text-slate-300 leading-relaxed bg-slate-800 rounded-xl p-4"><span class="text-slate-500"># Middleware handles ALL routes automatically</span>
+<span class="text-sky-400">class</span> <span class="text-amber-300">ResponseCacheMiddleware</span>(BaseHTTPMiddleware):
+  <span class="text-sky-400">async def</span> dispatch(req, call_next):
+    key = <span class="text-amber-300">f"mc:{req.url.path}"</span>
+    cached = <span class="text-sky-400">await</span> redis.get(key)
+    <span class="text-sky-400">if</span> cached:
+      <span class="text-sky-400">return</span> Response(<span class="text-amber-300">X-Cache=<span class="text-emerald-300">"HIT"</span></span>)
+    resp = <span class="text-sky-400">await</span> call_next(req)
+    <span class="text-sky-400">await</span> redis.setex(key, 30, body)
+    <span class="text-sky-400">return</span> Response(<span class="text-amber-300">X-Cache=<span class="text-rose-300">"MISS"</span></span>)
+
+<span class="text-slate-500"># Route handler — ZERO cache logic</span>
+<span class="text-indigo-300">@app.get</span>(<span class="text-amber-300">"/v1/middleware/catalog"</span>)
+<span class="text-sky-400">async def</span> catalog(db):
+    tracks = <span class="text-sky-400">await</span> db.execute(select(Track))
+    <span class="text-sky-400">return</span> {<span class="text-amber-300">"tracks"</span>: tracks}</pre>
+        </div>
+        <div class="p-5">
+          <div class="text-sky-400 font-semibold text-xs mb-3 uppercase tracking-wider">2.3 Cache-Aside (manual)</div>
+          <pre class="text-xs text-slate-300 leading-relaxed bg-slate-800 rounded-xl p-4"><span class="text-slate-500"># Endpoint owns ALL cache logic</span>
+
+
+<span class="text-indigo-300">@app.get</span>(<span class="text-amber-300">"/v1/cache-aside/order/{id}"</span>)
+<span class="text-sky-400">async def</span> endpoint(order_id, redis, db):
+
+  <span class="text-slate-500"># 1. Check cache manually</span>
+  raw = <span class="text-sky-400">await</span> redis.get(f<span class="text-amber-300">"order:{order_id}"</span>)
+  <span class="text-sky-400">if</span> raw:
+    <span class="text-sky-400">return</span> json.loads(raw)
+
+  <span class="text-slate-500"># 2. DB fetch on miss</span>
+  data = <span class="text-sky-400">await</span> db.get(Order, order_id)
+
+  <span class="text-slate-500"># 3. Populate cache manually</span>
+  <span class="text-sky-400">await</span> redis.setex(key, 300, json.dumps(data))
+  <span class="text-sky-400">return</span> data</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Demo ───────────────────────────────────────────────────────────── -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+      <!-- ── Fetch Catalog ─────────────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-indigo-950 to-slate-900 border-b border-indigo-900 px-5 py-4">
+          <h3 class="text-indigo-300 font-bold">Fetch via Middleware</h3>
+          <p class="text-slate-400 text-xs mt-1">
+            First request hits the DB (~150 ms). Every repeat returns from Redis (&lt; 2 ms).
+            Check <code class="text-indigo-300 font-mono">X-Cache</code> header in the response.
+          </p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Endpoint</label>
+            <select id="endpoint-choice" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500">
+              <option value="catalog">GET /api/middleware/catalog — all tracks</option>
+              <option value="track-1">GET /api/middleware/track/1 — Bohemian Rhapsody</option>
+              <option value="track-2">GET /api/middleware/track/2 — Hotel California</option>
+              <option value="track-3">GET /api/middleware/track/3 — Lose Yourself</option>
+              <option value="track-4">GET /api/middleware/track/4 — Billie Jean</option>
+              <option value="track-5">GET /api/middleware/track/5 — So What</option>
+            </select>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="fetchEndpoint()" class="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 rounded-lg text-sm font-semibold transition-colors">
+              Fetch
+            </button>
+            <button onclick="fetchAll()" class="px-4 py-2 bg-indigo-900 hover:bg-indigo-800 rounded-lg text-sm font-semibold transition-colors">
+              Fetch All (catalog + 5 tracks)
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            <strong class="text-indigo-300">Try this:</strong> Fetch the catalog.
+            First call → <code class="text-amber-300 font-mono">X-Cache: MISS</code>, ~150 ms.
+            Second call → <code class="text-emerald-300 font-mono">X-Cache: HIT</code>, &lt; 2 ms.
+            The route handler body did <em>not</em> run on the second call.
+          </p>
+          <div id="fetch-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Stats & Cache Control ─────────────────────────────────────── -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div class="bg-gradient-to-br from-indigo-950 to-slate-900 border-b border-indigo-900 px-5 py-4">
+          <h3 class="text-indigo-300 font-bold">Stats &amp; Cache Control</h3>
+          <p class="text-slate-400 text-xs mt-1">
+            Hit/miss counters, active <code class="text-indigo-300 font-mono">mc:*</code> keys, and
+            TTL. Clear and repeat to see the full miss → populate → hit cycle.
+          </p>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="viewStats()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-semibold transition-colors">
+              View Stats
+            </button>
+            <button onclick="clearCache()" class="px-4 py-2 bg-red-900 hover:bg-red-800 rounded-lg text-sm font-semibold transition-colors">
+              Clear Cache
+            </button>
+          </div>
+          <p class="text-slate-500 text-xs">
+            <strong class="text-amber-300">Workflow:</strong>
+            Fetch All → View Stats (hits=0, misses=6, cached_keys=[6 mc:* entries]) →
+            Fetch All again → View Stats (hits=6, misses=0) →
+            Clear Cache → Fetch again (all misses).
+          </p>
+          <div id="stats-result" class="rounded-xl bg-slate-800 p-4 min-h-16 text-xs text-slate-500 italic">
+            Results appear here…
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /grid -->
+
+    <!-- ── Comparison table ──────────────────────────────────────────────── -->
+    <section>
+      <h2 class="text-base font-bold text-slate-200 mb-4">Middleware vs Per-Route Caching Patterns</h2>
+      <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <table class="w-full text-sm text-left">
+          <thead class="bg-slate-800 text-slate-400 uppercase text-xs tracking-wider">
+            <tr>
+              <th class="px-4 py-3">Aspect</th>
+              <th class="px-4 py-3">2.7 Middleware</th>
+              <th class="px-4 py-3">2.3 Cache-Aside</th>
+              <th class="px-4 py-3">2.6 Read-Through</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 bg-slate-900 text-xs text-slate-400">
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Cache logic location</td>
+              <td class="px-4 py-3 text-emerald-400">Middleware class — zero app code</td>
+              <td class="px-4 py-3 text-amber-400">Inside each endpoint</td>
+              <td class="px-4 py-3 text-teal-400">@cached decorator on DB function</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Granularity</td>
+              <td class="px-4 py-3 text-amber-400">Full HTTP response (coarse-grained)</td>
+              <td class="px-4 py-3 text-emerald-400">Per value, custom key</td>
+              <td class="px-4 py-3 text-emerald-400">Per function call argument</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">HIT latency</td>
+              <td class="px-4 py-3 text-emerald-400">&lt; 2 ms (route never called)</td>
+              <td class="px-4 py-3 text-emerald-400">&lt; 2 ms (redis.get)</td>
+              <td class="px-4 py-3 text-emerald-400">&lt; 2 ms (aiocache)</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">TTL</td>
+              <td class="px-4 py-3 text-amber-400">Fixed per middleware instance (30 s demo)</td>
+              <td class="px-4 py-3 text-emerald-400">Configurable per call</td>
+              <td class="px-4 py-3 text-amber-400">Fixed at decorator definition</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Response header insight</td>
+              <td class="px-4 py-3 text-emerald-400">X-Cache: HIT / MISS on every response</td>
+              <td class="px-4 py-3 text-amber-400">Only if you add it manually</td>
+              <td class="px-4 py-3 text-amber-400">Only if you add it manually</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Bypass per-request</td>
+              <td class="px-4 py-3 text-emerald-400">Yes — via X-No-Cache header pattern</td>
+              <td class="px-4 py-3 text-emerald-400">Yes — skip the check in code</td>
+              <td class="px-4 py-3 text-amber-400">No — decorator always applies</td>
+            </tr>
+            <tr class="hover:bg-slate-800">
+              <td class="px-4 py-3 font-semibold text-slate-300">Best for</td>
+              <td class="px-4 py-3">Public GET APIs, zero-code caching, CDN-like behaviour</td>
+              <td class="px-4 py-3">Selective caching, complex TTL logic</td>
+              <td class="px-4 py-3">Read-heavy functions, clean decorators</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+  // ── Utilities ────────────────────────────────────────────────────────────────
+  function loading(id) {
+    document.getElementById(id).innerHTML = '<span class="spinner text-slate-400">↻</span> loading…';
+  }
+
+  async function call(resultId, url, method = 'GET') {
+    loading(resultId);
+    const t0 = performance.now();
+    try {
+      const r = await fetch(url, { method });
+      const elapsed = Math.round(performance.now() - t0);
+      const json = await r.json();
+      const el = document.getElementById(resultId);
+      el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in';
+      // X-Cache comes from the response header (forwarded by _proxy_xcache),
+      // OR from json.x_cache injected by the middleware into the body —
+      // whichever is available. Both should agree; the body field is the
+      // reliable fallback for environments that strip custom headers.
+      const xCache = r.headers.get('X-Cache') || json.x_cache || '(unknown)';
+      const cacheColor = xCache === 'HIT' ? 'text-emerald-400' : xCache === 'MISS' ? 'text-amber-400' : 'text-slate-400';
+      el.innerHTML =
+        `<div class="mb-2 flex gap-4 text-xs">` +
+        `<span class="${cacheColor} font-bold">X-Cache: ${xCache}</span>` +
+        `<span class="text-slate-500">Round-trip: ${elapsed} ms</span>` +
+        `</div>` +
+        `<pre class="${r.ok ? 'text-slate-300' : 'text-red-400'} leading-relaxed">${JSON.stringify(json, null, 2)}</pre>`;
+    } catch (e) {
+      document.getElementById(resultId).innerHTML = `<span class="text-red-400">${e.message}</span>`;
+    }
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+  function fetchEndpoint() {
+    const choice = document.getElementById('endpoint-choice').value;
+    if (choice === 'catalog') {
+      call('fetch-result', '/api/middleware/catalog');
+    } else {
+      const id = choice.split('-')[1];
+      call('fetch-result', `/api/middleware/track/${id}`);
+    }
+  }
+
+  async function fetchAll() {
+    loading('fetch-result');
+    const endpoints = [
+      '/api/middleware/catalog',
+      '/api/middleware/track/1',
+      '/api/middleware/track/2',
+      '/api/middleware/track/3',
+      '/api/middleware/track/4',
+      '/api/middleware/track/5',
+    ];
+    const results = [];
+    for (const url of endpoints) {
+      try {
+        const t0 = performance.now();
+        const r = await fetch(url);
+        const elapsed = Math.round(performance.now() - t0);
+        const j = await r.json();
+        results.push({
+          url,
+          x_cache: r.headers.get('X-Cache') || j.x_cache || 'unknown',
+          round_trip_ms: elapsed,
+          count: j.count ?? (j.id ? 1 : undefined),
+        });
+      } catch (e) {
+        results.push({ url, error: e.message });
+      }
+    }
+    const el = document.getElementById('fetch-result');
+    el.className = 'rounded-xl bg-slate-800 p-4 text-xs fade-in';
+    el.innerHTML = `<pre class="text-slate-300 leading-relaxed">${JSON.stringify(results, null, 2)}</pre>`;
+  }
+
+  function viewStats() {
+    call('stats-result', '/api/middleware/stats');
+  }
+
+  function clearCache() {
+    call('stats-result', '/api/middleware/cache', 'DELETE');
+  }
+
+  // ── Health check ─────────────────────────────────────────────────────────────
+  async function checkHealth() {
+    try {
+      const r = await fetch('/api/health');
+      const j = await r.json();
+      const badge = document.getElementById('health-badge');
+      if (j.redis === 'ok') {
+        badge.className = 'text-xs px-3 py-1.5 rounded-full bg-emerald-900 text-emerald-300 font-mono';
+        badge.textContent = '● Redis ok';
+      } else {
+        badge.className = 'text-xs px-3 py-1.5 rounded-full bg-red-900 text-red-300 font-mono';
+        badge.textContent = '● Redis down';
+      }
+    } catch {
+      document.getElementById('health-badge').textContent = 'offline';
+    }
+  }
+
+  checkHealth();
+  </script>
+
+</body>
+</html>

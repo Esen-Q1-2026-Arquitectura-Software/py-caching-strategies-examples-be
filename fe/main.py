@@ -12,6 +12,7 @@ Pages:
   GET  /strategy/24             — 2.4 Write-Through Pattern
   GET  /strategy/25             — 2.5 Write-Behind (Write-Back) Pattern
   GET  /strategy/26             — 2.6 Read-Through Pattern (aiocache)
+  GET  /strategy/27             — 2.7 FastAPI Response Caching Middleware
 
 API Proxies: (see routes below)
 """
@@ -37,6 +38,27 @@ def _proxy(method: str, path: str):
         with httpx.Client(timeout=_CLIENT_TIMEOUT) as client:
             resp = client.request(method, url, **kwargs)
         return jsonify(resp.json()), resp.status_code
+    except httpx.RequestError as exc:
+        return jsonify({"error": str(exc), "detail": "Backend unreachable"}), 502
+
+
+def _proxy_xcache(method: str, path: str):
+    """Like _proxy but also forwards X-Cache / X-Cache-Key response headers.
+
+    Used exclusively by the 2.7 middleware demo routes so the browser JS can
+    read r.headers.get('X-Cache') and show HIT / MISS directly.
+    """
+    url = f"{BACKEND_URL}{path}"
+    try:
+        with httpx.Client(timeout=_CLIENT_TIMEOUT) as client:
+            resp = client.request(method, url)
+        flask_resp = jsonify(resp.json())
+        flask_resp.status_code = resp.status_code
+        for header in ("X-Cache", "X-Cache-Key"):
+            val = resp.headers.get(header)
+            if val:
+                flask_resp.headers[header] = val
+        return flask_resp
     except httpx.RequestError as exc:
         return jsonify({"error": str(exc), "detail": "Backend unreachable"}), 502
 
@@ -77,6 +99,11 @@ def strategy_25():
 @app.get("/strategy/26")
 def strategy_26():
     return render_template("strategy_26.html")
+
+
+@app.get("/strategy/27")
+def strategy_27():
+    return render_template("strategy_27.html")
 
 
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
@@ -218,6 +245,30 @@ def read_through_stats():
 @app.route("/api/read-through/cache", methods=["DELETE"])
 def read_through_clear():
     return _proxy("DELETE", "/v1/read-through/cache")
+
+
+# ── Response Caching Middleware (2.7) proxy ───────────────────────────────────
+# Uses _proxy_xcache so the X-Cache header is forwarded to the browser.
+
+
+@app.get("/api/middleware/catalog")
+def middleware_catalog():
+    return _proxy_xcache("GET", "/v1/middleware/catalog")
+
+
+@app.get("/api/middleware/track/<int:track_id>")
+def middleware_track(track_id: int):
+    return _proxy_xcache("GET", f"/v1/middleware/track/{track_id}")
+
+
+@app.get("/api/middleware/stats")
+def middleware_stats():
+    return _proxy("GET", "/v1/middleware/stats")
+
+
+@app.route("/api/middleware/cache", methods=["DELETE"])
+def middleware_clear():
+    return _proxy("DELETE", "/v1/middleware/cache")
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

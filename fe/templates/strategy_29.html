@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.9 Async aiocache — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+    .tab-btn.active { border-bottom-color: #06b6d4; color: #06b6d4; }
+    .tab-btn { border-bottom: 2px solid transparent; }
+    pre { font-family: 'Fira Mono', 'Cascadia Code', ui-monospace, monospace; }
+    .hit-badge  { background:#052e16; color:#86efac; }
+    .miss-badge { background:#450a0a; color:#fca5a5; }
+    .info-badge { background:#1e3a5f; color:#93c5fd; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-400 hover:text-white text-sm transition-colors">← All strategies</a>
+        <span class="text-slate-700">/</span>
+        <span class="text-cyan-400 font-bold text-sm">2.9 Async aiocache</span>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs px-2 py-1 rounded bg-cyan-900 text-cyan-300 font-mono">aiocache</span>
+        <span class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-300 font-mono">MsgPack</span>
+        <span class="text-xs px-2 py-1 rounded bg-slate-800 text-slate-300 font-mono">Plugins</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-10 space-y-8">
+
+    <!-- ── Title ──────────────────────────────────────────────────────────── -->
+    <div class="space-y-3">
+      <div class="flex items-baseline gap-4">
+        <span class="text-5xl font-black text-cyan-400">2.9</span>
+        <h1 class="text-2xl font-bold text-white">Async Caching with aiocache</h1>
+      </div>
+      <p class="text-slate-400 max-w-3xl leading-relaxed">
+        Advanced aiocache patterns beyond the basic <code class="text-cyan-300 font-mono text-sm">@cached</code> decorator from 2.6.
+        This demo covers <strong class="text-slate-200">MsgPack serialisation</strong>,
+        <strong class="text-slate-200">built-in plugins</strong> (HitMissRatioPlugin, TimingPlugin),
+        <strong class="text-slate-200">batch operations</strong> (multi_get / multi_set),
+        <strong class="text-slate-200">named cache configuration</strong> via <code class="text-cyan-300 font-mono text-sm">caches.set_config()</code>,
+        and <strong class="text-slate-200">manual cache operations</strong>.
+        Domain: 8 recipes stored in SQLite → cached in Redis under namespace <code class="text-cyan-300 font-mono text-sm">ac29</code>.
+      </p>
+    </div>
+
+    <!-- ── Key concepts banner ────────────────────────────────────────────── -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+        <div class="text-cyan-400 font-semibold text-xs uppercase tracking-wider">Serialiser</div>
+        <div class="text-slate-200 font-mono text-xs">MsgPackSerializer</div>
+        <div class="text-slate-500 text-xs">2–3× faster than JSON<br>30–50% smaller payload</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+        <div class="text-cyan-400 font-semibold text-xs uppercase tracking-wider">Plugins</div>
+        <div class="text-slate-200 font-mono text-xs">HitMissRatioPlugin<br>TimingPlugin</div>
+        <div class="text-slate-500 text-xs">Built-in observability,<br>zero extra code</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+        <div class="text-cyan-400 font-semibold text-xs uppercase tracking-wider">Batch API</div>
+        <div class="text-slate-200 font-mono text-xs">multi_get()<br>multi_set()</div>
+        <div class="text-slate-500 text-xs">1 round-trip for N keys<br>vs N individual GETs</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+        <div class="text-cyan-400 font-semibold text-xs uppercase tracking-wider">Config</div>
+        <div class="text-slate-200 font-mono text-xs">caches.set_config()</div>
+        <div class="text-slate-500 text-xs">Named caches, shared<br>instance + plugin state</div>
+      </div>
+    </div>
+
+    <!-- ── How 2.9 differs from 2.6 ──────────────────────────────────────── -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <h2 class="text-sm font-bold text-slate-300 mb-3">2.9 vs 2.6 — What's new</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs text-left">
+          <thead class="text-slate-500 uppercase">
+            <tr><th class="pb-2 pr-6">Feature</th><th class="pb-2 pr-6">2.6 Read-Through</th><th class="pb-2">2.9 Async aiocache</th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800 text-slate-300">
+            <tr><td class="py-2 pr-6 font-mono">Serialiser</td><td class="py-2 pr-6 text-slate-400">JsonSerializer (default)</td><td class="py-2 text-cyan-300">MsgPackSerializer (binary)</td></tr>
+            <tr><td class="py-2 pr-6 font-mono">Plugins</td><td class="py-2 pr-6 text-slate-400">None</td><td class="py-2 text-cyan-300">HitMissRatioPlugin + TimingPlugin</td></tr>
+            <tr><td class="py-2 pr-6 font-mono">Batch ops</td><td class="py-2 pr-6 text-slate-400">Not used</td><td class="py-2 text-cyan-300">multi_get() / multi_set()</td></tr>
+            <tr><td class="py-2 pr-6 font-mono">Cache config</td><td class="py-2 pr-6 text-slate-400">Inline kwargs on @cached</td><td class="py-2 text-cyan-300">caches.set_config() named alias</td></tr>
+            <tr><td class="py-2 pr-6 font-mono">Manual ops</td><td class="py-2 pr-6 text-slate-400">None</td><td class="py-2 text-cyan-300">exists() / delete() / clear()</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Tabs ────────────────────────────────────────────────────────────── -->
+    <div>
+      <div class="flex gap-0 border-b border-slate-800 mb-6">
+        <button onclick="showTab('single')" id="tab-single" class="tab-btn active px-5 py-3 text-sm font-semibold transition-colors">
+          Single Recipe <span class="text-xs ml-1 text-slate-500">@cached</span>
+        </button>
+        <button onclick="showTab('batch')" id="tab-batch" class="tab-btn px-5 py-3 text-sm font-semibold text-slate-400 hover:text-white transition-colors">
+          Batch Fetch <span class="text-xs ml-1 text-slate-500">multi_get</span>
+        </button>
+        <button onclick="showTab('ops')" id="tab-ops" class="tab-btn px-5 py-3 text-sm font-semibold text-slate-400 hover:text-white transition-colors">
+          Cache Ops <span class="text-xs ml-1 text-slate-500">delete / clear</span>
+        </button>
+        <button onclick="showTab('stats')" id="tab-stats" class="tab-btn px-5 py-3 text-sm font-semibold text-slate-400 hover:text-white transition-colors">
+          Stats &amp; Config <span class="text-xs ml-1 text-slate-500">plugins</span>
+        </button>
+      </div>
+
+      <!-- ── Tab: Single Recipe ─────────────────────────────────────────── -->
+      <div id="pane-single" class="space-y-5 fade-in">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+          <div>
+            <h3 class="font-semibold text-slate-200 mb-1">Fetch single recipe via <code class="text-cyan-300 font-mono text-sm">@cached</code> + MsgPack</h3>
+            <p class="text-slate-400 text-sm">
+              First call: body of <code class="font-mono text-xs text-cyan-300">_cached_fetch_recipe()</code> executes, SQLite queried (140 ms simulated), result serialised with MsgPack and stored in Redis.
+              Subsequent calls: aiocache reads from Redis, deserialises with MsgPack (~1 ms). DB never touched.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-end gap-3">
+            <div class="space-y-1">
+              <label class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Recipe ID</label>
+              <select id="single-id" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-500">
+                <option value="1">1 — Margherita Pizza</option>
+                <option value="2" selected>2 — Chicken Tikka Masala</option>
+                <option value="3">3 — Beef Ramen</option>
+                <option value="4">4 — Greek Salad</option>
+                <option value="5">5 — Pad Thai</option>
+                <option value="6">6 — Shakshuka</option>
+                <option value="7">7 — French Onion Soup</option>
+                <option value="8">8 — Chocolate Lava Cake</option>
+              </select>
+            </div>
+            <button onclick="fetchSingle()" class="bg-cyan-700 hover:bg-cyan-600 text-white px-5 py-2 rounded-lg text-sm font-semibold transition-colors">
+              GET Recipe
+            </button>
+            <button onclick="fetchSingle(true)" class="bg-slate-700 hover:bg-slate-600 text-white px-5 py-2 rounded-lg text-sm font-semibold transition-colors">
+              GET × 5 (compare latency)
+            </button>
+          </div>
+          <div id="single-result" class="hidden"></div>
+          <div id="single-history" class="hidden space-y-1">
+            <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Last 5 calls</div>
+            <div id="single-history-rows" class="space-y-1"></div>
+          </div>
+        </div>
+
+        <!-- Code block -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="px-4 py-2 bg-slate-800 text-xs text-slate-400 font-mono flex items-center justify-between">
+            <span>be/routers/s29_aiocache.py — @cached with MsgPack + plugins</span>
+          </div>
+          <pre class="text-xs text-slate-300 p-5 overflow-x-auto leading-relaxed"><span class="text-slate-500"># Named cache — configured once at module import</span>
+caches.set_config({
+    <span class="text-cyan-300">"ac29_recipes"</span>: {
+        <span class="text-cyan-300">"cache"</span>: <span class="text-green-300">"aiocache.RedisCache"</span>,
+        <span class="text-cyan-300">"namespace"</span>: <span class="text-green-300">"ac29"</span>,
+        <span class="text-cyan-300">"ttl"</span>: 180,
+        <span class="text-cyan-300">"serializer"</span>: {<span class="text-cyan-300">"class"</span>: <span class="text-green-300">"aiocache.serializers.MsgPackSerializer"</span>},
+        <span class="text-cyan-300">"plugins"</span>: [
+            {<span class="text-cyan-300">"class"</span>: <span class="text-green-300">"aiocache.plugins.HitMissRatioPlugin"</span>},
+            {<span class="text-cyan-300">"class"</span>: <span class="text-green-300">"aiocache.plugins.TimingPlugin"</span>},
+        ],
+    }
+})
+
+<span class="text-yellow-300">@aiocache_cached</span>(alias=<span class="text-cyan-300">"ac29_recipes"</span>, key_builder=<span class="text-purple-300">_recipe_key_builder</span>)
+<span class="text-blue-300">async def</span> <span class="text-yellow-300">_cached_fetch_recipe</span>(recipe_id: int):
+    <span class="text-slate-500">"""Body runs ONLY on cache miss."""</span>
+    <span class="text-blue-300">return await</span> _db_fetch_recipe(recipe_id)</pre>
+        </div>
+      </div>
+
+      <!-- ── Tab: Batch Fetch ───────────────────────────────────────────── -->
+      <div id="pane-batch" class="hidden space-y-5 fade-in">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+          <div>
+            <h3 class="font-semibold text-slate-200 mb-1">Batch fetch via <code class="text-cyan-300 font-mono text-sm">cache.multi_get()</code> / <code class="text-cyan-300 font-mono text-sm">cache.multi_set()</code></h3>
+            <p class="text-slate-400 text-sm">
+              <code class="font-mono text-xs text-cyan-300">multi_get(keys)</code> issues a single Redis <code class="font-mono text-xs text-slate-300">MGET</code> for all IDs simultaneously — one network round-trip regardless of count.
+              Cache misses are fetched from DB in parallel with <code class="font-mono text-xs text-slate-300">asyncio.gather()</code>, then stored back via a single <code class="font-mono text-xs text-cyan-300">multi_set()</code>.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-end gap-3">
+            <div class="space-y-1 flex-1 min-w-48">
+              <label class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Recipe IDs (comma-separated, 1–8)</label>
+              <input id="batch-ids" type="text" value="1,2,3,4" placeholder="e.g. 1,2,3,4,5"
+                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-cyan-500" />
+            </div>
+            <button onclick="fetchBatch()" class="bg-cyan-700 hover:bg-cyan-600 text-white px-5 py-2 rounded-lg text-sm font-semibold transition-colors">
+              GET Batch
+            </button>
+          </div>
+          <div id="batch-result" class="hidden"></div>
+        </div>
+
+        <!-- Code block -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="px-4 py-2 bg-slate-800 text-xs text-slate-400 font-mono">
+            be/routers/s29_aiocache.py — multi_get / multi_set
+          </div>
+          <pre class="text-xs text-slate-300 p-5 overflow-x-auto leading-relaxed">cache = caches.get(<span class="text-cyan-300">"ac29_recipes"</span>)
+keys = [str(i) <span class="text-blue-300">for</span> i <span class="text-blue-300">in</span> id_list]
+
+<span class="text-slate-500"># ONE Redis MGET — latency constant regardless of key count</span>
+cached_values = <span class="text-blue-300">await</span> cache.<span class="text-yellow-300">multi_get</span>(keys)
+
+<span class="text-slate-500"># misses → concurrent DB fetch</span>
+fetched = <span class="text-blue-300">await</span> asyncio.gather(*[
+    _db_fetch_recipe(rid) <span class="text-blue-300">for</span> rid <span class="text-blue-300">in</span> miss_ids
+])
+
+<span class="text-slate-500"># ONE Redis MSET for all DB results</span>
+<span class="text-blue-300">await</span> cache.<span class="text-yellow-300">multi_set</span>(pairs, ttl=180)</pre>
+        </div>
+      </div>
+
+      <!-- ── Tab: Cache Ops ─────────────────────────────────────────────── -->
+      <div id="pane-ops" class="hidden space-y-5 fade-in">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+          <!-- Evict single -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+            <div>
+              <h3 class="font-semibold text-slate-200 mb-1"><code class="text-cyan-300 font-mono text-sm">cache.delete(key)</code></h3>
+              <p class="text-slate-400 text-xs">Manually evict one recipe key from the <code class="font-mono text-xs">ac29</code> namespace. The next GET for that ID will be a cache miss.</p>
+            </div>
+            <div class="flex items-end gap-3">
+              <div class="space-y-1 flex-1">
+                <label class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Recipe ID</label>
+                <select id="evict-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-500">
+                  <option value="1">1 — Margherita Pizza</option>
+                  <option value="2">2 — Chicken Tikka Masala</option>
+                  <option value="3">3 — Beef Ramen</option>
+                  <option value="4">4 — Greek Salad</option>
+                  <option value="5">5 — Pad Thai</option>
+                  <option value="6">6 — Shakshuka</option>
+                  <option value="7">7 — French Onion Soup</option>
+                  <option value="8">8 — Chocolate Lava Cake</option>
+                </select>
+              </div>
+              <button onclick="evictSingle()" class="bg-amber-700 hover:bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+                Evict
+              </button>
+            </div>
+            <div id="evict-result" class="hidden"></div>
+          </div>
+
+          <!-- Clear namespace -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+            <div>
+              <h3 class="font-semibold text-slate-200 mb-1"><code class="text-cyan-300 font-mono text-sm">cache.clear()</code></h3>
+              <p class="text-slate-400 text-xs">Evict every key in the <code class="font-mono text-xs">ac29</code> namespace atomically. Equivalent to <code class="font-mono text-xs">KEYS ac29:*</code> + <code class="font-mono text-xs">DEL</code>. All subsequent GETs will be misses.</p>
+            </div>
+            <button onclick="clearNamespace()" class="bg-red-800 hover:bg-red-700 text-white px-5 py-2 rounded-lg text-sm font-semibold transition-colors">
+              Clear Namespace (ac29)
+            </button>
+            <div id="clear-result" class="hidden"></div>
+          </div>
+        </div>
+
+        <!-- Code block -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="px-4 py-2 bg-slate-800 text-xs text-slate-400 font-mono">
+            be/routers/s29_aiocache.py — manual operations
+          </div>
+          <pre class="text-xs text-slate-300 p-5 overflow-x-auto leading-relaxed"><span class="text-slate-500"># Check existence (no value fetched)</span>
+pre_exists = <span class="text-blue-300">await</span> cache.<span class="text-yellow-300">exists</span>(str(recipe_id))
+
+<span class="text-slate-500"># Delete one key (namespace applied automatically)</span>
+deleted = <span class="text-blue-300">await</span> cache.<span class="text-yellow-300">delete</span>(str(recipe_id))
+
+<span class="text-slate-500"># Evict entire namespace — uses configured namespace="ac29"</span>
+<span class="text-blue-300">await</span> cache.<span class="text-yellow-300">clear</span>()</pre>
+        </div>
+      </div>
+
+      <!-- ── Tab: Stats ─────────────────────────────────────────────────── -->
+      <div id="pane-stats" class="hidden space-y-5 fade-in">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="font-semibold text-slate-200">Live stats &amp; aiocache configuration</h3>
+            <div class="flex gap-2">
+              <button onclick="loadStats()" class="bg-cyan-700 hover:bg-cyan-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+                Refresh Stats
+              </button>
+              <button onclick="resetStats()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+                Reset Counters
+              </button>
+            </div>
+          </div>
+          <div id="stats-result" class="text-slate-400 text-sm">Click "Refresh Stats" to load.</div>
+        </div>
+
+        <!-- MsgPack explainer -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+          <h3 class="font-semibold text-slate-200 text-sm">Why MsgPack over JSON?</h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-400">
+            <div class="space-y-2">
+              <div class="font-semibold text-slate-300 text-xs uppercase tracking-wider">JSON (text)</div>
+              <div class="bg-slate-800 rounded-lg p-3 font-mono text-slate-400">
+                <span class="text-yellow-300">{"id": 1, "name": "Pizza"}</span><br>
+                → stored as UTF-8 text<br>
+                → Python dict → json.dumps() → bytes<br>
+                → slow for nested structs<br>
+                → larger payload (quoted keys + values)
+              </div>
+            </div>
+            <div class="space-y-2">
+              <div class="font-semibold text-cyan-300 text-xs uppercase tracking-wider">MsgPack (binary)</div>
+              <div class="bg-slate-800 rounded-lg p-3 font-mono text-slate-400">
+                <span class="text-cyan-300">81 a2 69 64 01 a4 6e 61 6d 65 …</span><br>
+                → compact binary format<br>
+                → Python dict → msgpack.packb() → bytes<br>
+                → 2–3× faster serialisation<br>
+                → 30–50% smaller in Redis memory
+              </div>
+            </div>
+          </div>
+          <p class="text-slate-500 text-xs">Install: <code class="font-mono text-slate-300">pip install msgpack</code> — aiocache loads it automatically when <code class="font-mono text-slate-300">MsgPackSerializer</code> is configured.</p>
+        </div>
+
+        <!-- Plugin explainer -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+          <h3 class="font-semibold text-slate-200 text-sm">How aiocache plugins work</h3>
+          <pre class="text-xs text-slate-300 overflow-x-auto leading-relaxed"><span class="text-slate-500"># HitMissRatioPlugin hooks post_get() on the cache instance:</span>
+<span class="text-blue-300">class</span> <span class="text-yellow-300">HitMissRatioPlugin</span>(BasePlugin):
+    <span class="text-blue-300">async def</span> <span class="text-yellow-300">post_get</span>(self, client, key, ret, ...):
+        <span class="text-blue-300">if</span> ret <span class="text-blue-300">is not</span> None:
+            client.hit_miss_ratio[<span class="text-cyan-300">"hits"</span>] += 1   <span class="text-slate-500"># stored on the cache instance</span>
+        <span class="text-blue-300">else</span>:
+            client.hit_miss_ratio[<span class="text-cyan-300">"misses"</span>] += 1
+
+<span class="text-slate-500"># Access after operations:</span>
+cache = caches.get(<span class="text-cyan-300">"ac29_recipes"</span>)
+ratio = cache.hit_miss_ratio   <span class="text-slate-500"># {"hits": 42, "misses": 7, "hit_ratio": 0.857}</span></pre>
+          <p class="text-slate-500 text-xs">
+            TimingPlugin hooks <code class="font-mono text-slate-300">pre_get</code> / <code class="font-mono text-slate-300">post_get</code> to record per-operation latency — transparent to application code.
+            Plugins are registered once in <code class="font-mono text-slate-300">caches.set_config()</code> and apply automatically to every operation on the named cache.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  function showTab(name) {
+    ['single','batch','ops','stats'].forEach(t => {
+      document.getElementById('pane-' + t).classList.add('hidden');
+      document.getElementById('tab-' + t).classList.remove('active');
+      document.getElementById('tab-' + t).classList.add('text-slate-400');
+    });
+    document.getElementById('pane-' + name).classList.remove('hidden');
+    document.getElementById('tab-' + name).classList.add('active');
+    document.getElementById('tab-' + name).classList.remove('text-slate-400');
+  }
+
+  // ── Source badge ───────────────────────────────────────────────────────────
+  function sourceBadge(isHit) {
+    return isHit
+      ? '<span class="hit-badge inline-block text-xs font-bold px-2 py-0.5 rounded-full mr-2">● CACHE HIT</span>'
+      : '<span class="miss-badge inline-block text-xs font-bold px-2 py-0.5 rounded-full mr-2">● CACHE MISS</span>';
+  }
+
+  function infoBadge(txt) {
+    return `<span class="info-badge inline-block text-xs font-mono px-2 py-0.5 rounded-full mr-1">${txt}</span>`;
+  }
+
+  // ── Single recipe ──────────────────────────────────────────────────────────
+  const singleHistory = [];
+
+  async function fetchSingle(multi = false) {
+    const id = document.getElementById('single-id').value;
+    const calls = multi ? 5 : 1;
+    const res = document.getElementById('single-result');
+    const histEl = document.getElementById('single-history');
+    const histRows = document.getElementById('single-history-rows');
+    res.className = 'text-sm text-slate-400';
+    res.textContent = 'Fetching…';
+
+    for (let i = 0; i < calls; i++) {
+      try {
+        const r = await fetch(`/api/aiocache/recipe/${id}`);
+        const j = await r.json();
+        if (!r.ok) { res.textContent = `Error: ${j.detail}`; return; }
+
+        const entry = { hit: j.cache_hit, ms: j.latency_ms, source: j.source };
+        singleHistory.unshift(entry);
+        if (singleHistory.length > 5) singleHistory.pop();
+
+        if (i === calls - 1) {
+          res.className = 'fade-in';
+          res.innerHTML = `
+            <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-3">
+              <div class="flex items-center flex-wrap gap-2">
+                ${sourceBadge(j.cache_hit)}
+                ${infoBadge(j.latency_ms + ' ms')}
+                ${infoBadge(j.serializer)}
+                ${infoBadge('key: ' + j.cache_key)}
+                ${infoBadge('TTL ' + j.ttl_seconds + 's')}
+              </div>
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center text-xs">
+                <div class="bg-slate-900 rounded-lg py-2">
+                  <div class="text-slate-200 font-bold">${j.latency_ms} ms</div>
+                  <div class="text-slate-500 mt-0.5">latency</div>
+                </div>
+                <div class="bg-slate-900 rounded-lg py-2">
+                  <div class="text-${j.cache_hit ? 'emerald' : 'red'}-400 font-bold">${j.source}</div>
+                  <div class="text-slate-500 mt-0.5">source</div>
+                </div>
+                <div class="bg-slate-900 rounded-lg py-2">
+                  <div class="text-cyan-300 font-bold">${j.plugin_ratio.hits ?? 0}</div>
+                  <div class="text-slate-500 mt-0.5">plugin hits</div>
+                </div>
+                <div class="bg-slate-900 rounded-lg py-2">
+                  <div class="text-rose-300 font-bold">${j.plugin_ratio.misses ?? 0}</div>
+                  <div class="text-slate-500 mt-0.5">plugin misses</div>
+                </div>
+              </div>
+              <div>
+                <div class="text-xs text-slate-500 mb-1 font-semibold uppercase tracking-wider">Recipe</div>
+                <div class="text-slate-200 font-semibold">${j.data.name} <span class="text-slate-500 font-normal text-xs">(${j.data.cuisine} · ${j.data.prep_minutes} min)</span></div>
+                <div class="text-slate-400 text-xs mt-1">${j.data.ingredients.join(' · ')}</div>
+                <div class="text-slate-500 text-xs mt-1 italic">${j.data.instructions}</div>
+              </div>
+            </div>`;
+        }
+      } catch (e) { res.textContent = 'Network error: ' + e; return; }
+    }
+
+    // History
+    histRows.innerHTML = singleHistory.map((h, i) =>
+      `<div class="flex items-center gap-2 text-xs">
+        <span class="text-slate-500 font-mono w-4 text-right">${i+1}</span>
+        ${h.hit
+          ? '<span class="hit-badge px-2 py-0.5 rounded text-xs font-bold">HIT</span>'
+          : '<span class="miss-badge px-2 py-0.5 rounded text-xs font-bold">MISS</span>'}
+        <span class="text-slate-300 font-mono">${h.ms} ms</span>
+        <span class="text-slate-500">${h.source}</span>
+      </div>`
+    ).join('');
+    histEl.classList.remove('hidden');
+  }
+
+  // ── Batch fetch ────────────────────────────────────────────────────────────
+  async function fetchBatch() {
+    const ids = document.getElementById('batch-ids').value.trim();
+    const res = document.getElementById('batch-result');
+    res.className = 'text-sm text-slate-400';
+    res.textContent = 'Fetching…';
+    try {
+      const r = await fetch(`/api/aiocache/recipes?ids=${encodeURIComponent(ids)}`);
+      const j = await r.json();
+      if (!r.ok) { res.textContent = 'Error: ' + (j.detail || JSON.stringify(j)); return; }
+
+      const hitRatio = j.total_returned > 0
+        ? Math.round(j.hit_count / j.ids_requested.length * 100) : 0;
+
+      res.className = 'fade-in';
+      res.innerHTML = `
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-4">
+          <div class="flex items-center flex-wrap gap-2">
+            ${infoBadge('multi_get: ' + j.multi_get_ms + ' ms')}
+            ${infoBadge('total: ' + j.total_ms + ' ms')}
+            ${infoBadge('1 Redis round-trip')}
+            ${infoBadge(j.hit_count + ' hits / ' + j.miss_count + ' misses')}
+          </div>
+          <div class="grid grid-cols-4 gap-2 text-center text-xs">
+            <div class="bg-slate-900 rounded-lg py-2">
+              <div class="text-cyan-300 font-bold">${j.multi_get_ms} ms</div>
+              <div class="text-slate-500 mt-0.5">multi_get</div>
+            </div>
+            <div class="bg-slate-900 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">${j.total_ms} ms</div>
+              <div class="text-slate-500 mt-0.5">total (incl. DB)</div>
+            </div>
+            <div class="bg-slate-900 rounded-lg py-2">
+              <div class="text-emerald-400 font-bold">${j.hit_count}</div>
+              <div class="text-slate-500 mt-0.5">cache hits</div>
+            </div>
+            <div class="bg-slate-900 rounded-lg py-2">
+              <div class="text-rose-400 font-bold">${j.miss_count}</div>
+              <div class="text-slate-500 mt-0.5">cache misses</div>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider">Per-ID results</div>
+            <div class="flex flex-wrap gap-2">
+              ${j.ids_requested.map(id => {
+                const isHit = j.cache_hits.includes(id);
+                return `<span class="text-xs font-mono px-2 py-1 rounded ${isHit ? 'hit-badge' : 'miss-badge'}">
+                  ID ${id} ${isHit ? '✓' : '↓'}
+                </span>`;
+              }).join('')}
+            </div>
+          </div>
+          <div class="space-y-1">
+            ${j.recipes.map(r => `
+              <div class="bg-slate-900 rounded-lg px-3 py-2 flex items-center gap-3 text-xs">
+                <span class="text-slate-500 font-mono w-4">${r.id}</span>
+                <span class="text-slate-200 font-semibold">${r.name}</span>
+                <span class="text-slate-500">${r.cuisine}</span>
+                <span class="text-slate-600">·</span>
+                <span class="text-slate-500">${r.prep_minutes} min</span>
+              </div>`).join('')}
+          </div>
+        </div>`;
+    } catch (e) { res.textContent = 'Network error: ' + e; }
+    res.classList.remove('hidden');
+  }
+
+  // ── Evict single ───────────────────────────────────────────────────────────
+  async function evictSingle() {
+    const id = document.getElementById('evict-id').value;
+    const res = document.getElementById('evict-result');
+    res.className = 'text-sm';
+    res.textContent = 'Evicting…';
+    res.classList.remove('hidden');
+    try {
+      const r = await fetch(`/api/aiocache/recipe/${id}`, { method: 'DELETE' });
+      const j = await r.json();
+      res.className = 'fade-in';
+      res.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-xs space-y-1">
+        <div class="text-amber-300 font-semibold">${j.evicted ? '✓ Evicted' : '✗ Not found in cache'}</div>
+        <div class="text-slate-400 font-mono">${j.key}</div>
+        <div class="text-slate-500">${j.next_get}</div>
+      </div>`;
+    } catch(e) { res.textContent = 'Error: ' + e; }
+  }
+
+  // ── Clear namespace ────────────────────────────────────────────────────────
+  async function clearNamespace() {
+    const res = document.getElementById('clear-result');
+    res.className = 'text-sm';
+    res.textContent = 'Clearing…';
+    res.classList.remove('hidden');
+    try {
+      const r = await fetch('/api/aiocache/cache', { method: 'DELETE' });
+      const j = await r.json();
+      res.className = 'fade-in';
+      res.innerHTML = `<div class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-xs space-y-1">
+        <div class="text-red-400 font-semibold">✓ Namespace "${j.namespace}" cleared</div>
+        <div class="text-slate-500">${j.note}</div>
+      </div>`;
+    } catch(e) { res.textContent = 'Error: ' + e; }
+  }
+
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  async function loadStats() {
+    const res = document.getElementById('stats-result');
+    res.textContent = 'Loading…';
+    try {
+      const r = await fetch('/api/aiocache/stats');
+      const j = await r.json();
+      const pr = j.aiocache_plugin?.HitMissRatioPlugin ?? {};
+
+      res.className = 'fade-in';
+      res.innerHTML = `
+        <div class="space-y-4">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            ${[
+              ['Single endpoint (@cached)', j.single_endpoint, 'cyan'],
+              ['Batch endpoint (multi_get)', j.batch_endpoint, 'purple'],
+              ['Combined', j.combined, 'emerald'],
+            ].map(([label, d, col]) => `
+              <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+                <div class="text-xs text-slate-400 font-semibold uppercase tracking-wider">${label}</div>
+                <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                  <div><div class="text-emerald-400 font-bold text-lg">${d.hits}</div><div class="text-slate-500">hits</div></div>
+                  <div><div class="text-rose-400 font-bold text-lg">${d.misses}</div><div class="text-slate-500">misses</div></div>
+                  <div><div class="text-${col}-300 font-bold text-lg">${d.hit_ratio_pct}%</div><div class="text-slate-500">ratio</div></div>
+                </div>
+              </div>`).join('')}
+          </div>
+
+          <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+            <div class="text-xs text-slate-400 font-semibold uppercase tracking-wider">HitMissRatioPlugin (on cache instance)</div>
+            <div class="grid grid-cols-3 gap-2 text-center text-xs">
+              <div><div class="text-emerald-400 font-bold">${pr.hits ?? 0}</div><div class="text-slate-500">hits</div></div>
+              <div><div class="text-rose-400 font-bold">${pr.misses ?? 0}</div><div class="text-slate-500">misses</div></div>
+              <div><div class="text-cyan-300 font-bold">${pr.hit_ratio != null ? (pr.hit_ratio * 100).toFixed(1) + '%' : 'n/a'}</div><div class="text-slate-500">ratio</div></div>
+            </div>
+            <div class="text-slate-500 text-xs">${j.aiocache_plugin?.note ?? ''}</div>
+          </div>
+
+          <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+            <div class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Cache Configuration</div>
+            <pre class="text-xs text-slate-300 leading-relaxed overflow-x-auto">${JSON.stringify(j.config, null, 2)}</pre>
+          </div>
+        </div>`;
+    } catch(e) { res.textContent = 'Error: ' + e; }
+  }
+
+  async function resetStats() {
+    await fetch('/api/aiocache/reset', { method: 'POST' });
+    await loadStats();
+  }
+  </script>
+
+</body>
+</html>

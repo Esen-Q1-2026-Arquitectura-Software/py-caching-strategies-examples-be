@@ -330,7 +330,7 @@
 
     </section>
 
-    <!-- ── Row 3: Card 2.7 ──────────────────────────────────────────────────── -->
+    <!-- ── Row 3: Cards 2.7 + 2.8 + 2.9 ──────────────────────────────────────────── -->
     <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
       <!-- ── Card 2.7 ──────────────────────────────────────────── -->
@@ -372,6 +372,96 @@
             </div>
           </div>
           <div class="flex items-center text-indigo-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
+      <!-- ── Card 2.8 ──────────────────────────────────────────── -->
+      <a href="/strategy/28"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-amber-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-amber-400 leading-none">2.8</span>
+            <span class="badge bg-amber-900 text-amber-300 mt-1">HTTP Cache</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">HTTP Caching (ETag)</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            <em>No Redis</em> — ETag + Cache-Control turn the browser into the cache. 304 = zero body bytes.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0"></span>
+              <span><code class="text-amber-300 font-mono text-xs">ETag</code> + <code class="text-amber-300 font-mono text-xs">If-None-Match</code> → 304 Not Modified</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0"></span>
+              <span><code class="text-amber-300 font-mono text-xs">immutable</code> directive — browser never revalidates</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">0 bytes</div>
+              <div class="text-slate-500 mt-0.5">body on 304</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">60 s</div>
+              <div class="text-slate-500 mt-0.5">max-age</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-amber-400 font-bold">No Redis</div>
+              <div class="text-slate-500 mt-0.5">needed</div>
+            </div>
+          </div>
+          <div class="flex items-center text-amber-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
+      <!-- ── Card 2.9 ──────────────────────────────────────────── -->
+      <a href="/strategy/29"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-cyan-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-cyan-400 leading-none">2.9</span>
+            <span class="badge bg-cyan-900 text-cyan-300 mt-1">aiocache</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">Async aiocache</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            MsgPack serialiser, HitMissRatioPlugin, <code class="text-cyan-300 font-mono text-xs">multi_get</code> / <code class="text-cyan-300 font-mono text-xs">multi_set</code> batch ops.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-cyan-500 flex-shrink-0"></span>
+              <span><code class="text-cyan-300 font-mono text-xs">MsgPackSerializer</code> — 2–3× faster, 30–50% smaller than JSON</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-cyan-500 flex-shrink-0"></span>
+              <span><code class="text-cyan-300 font-mono text-xs">multi_get/set</code> — N keys in 1 Redis round-trip</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">~1 ms</div>
+              <div class="text-slate-500 mt-0.5">HIT latency</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">180 s</div>
+              <div class="text-slate-500 mt-0.5">TTL</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-cyan-400 font-bold">Plugins</div>
+              <div class="text-slate-500 mt-0.5">built-in</div>
+            </div>
+          </div>
+          <div class="flex items-center text-cyan-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
             <span>Open demo</span>
             <span class="transition-transform group-hover:translate-x-1">→</span>
           </div>
@@ -487,6 +577,14 @@
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
               <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
               <td class="px-4 py-3 text-slate-400 text-xs">All GET routes, zero per-route cache code</td>
+            </tr>
+            <tr class="hover:bg-slate-800 transition-colors">
+              <td class="px-4 py-3 font-semibold text-cyan-300 font-mono text-xs">Async aiocache</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">180 s</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Distributed</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes (Redis)</td>
+              <td class="px-4 py-3 text-emerald-400 text-xs">Yes</td>
+              <td class="px-4 py-3 text-slate-400 text-xs">Multi-key batch, MsgPack, plugin metrics</td>
             </tr>
           </tbody>
         </table>

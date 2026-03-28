@@ -20,7 +20,7 @@ API Proxies: (see routes below)
 import os
 
 import httpx
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, make_response, render_template, request
 
 app = Flask(__name__)
 
@@ -58,6 +58,38 @@ def _proxy_xcache(method: str, path: str):
             val = resp.headers.get(header)
             if val:
                 flask_resp.headers[header] = val
+        return flask_resp
+    except httpx.RequestError as exc:
+        return jsonify({"error": str(exc), "detail": "Backend unreachable"}), 502
+
+
+def _proxy_conditional(method: str, path: str):
+    """Forward conditional-GET headers (If-None-Match, If-Modified-Since) to
+    the backend and propagate caching response headers (ETag, Last-Modified,
+    Cache-Control) back to the browser.
+
+    Used exclusively by the 2.8 HTTP Caching demo routes.
+    A 304 response is returned as-is with no body so the browser JS can
+    read resp.status and observe the 304 directly.
+    """
+    url = f"{BACKEND_URL}{path}"
+    fwd_headers: dict = {}
+    for h in ("If-None-Match", "If-Modified-Since"):
+        val = request.headers.get(h)
+        if val:
+            fwd_headers[h] = val
+    try:
+        with httpx.Client(timeout=_CLIENT_TIMEOUT) as client:
+            resp = client.request(method, url, headers=fwd_headers)
+        if resp.status_code == 304:
+            flask_resp = make_response("", 304)
+        else:
+            flask_resp = jsonify(resp.json())
+            flask_resp.status_code = resp.status_code
+        for h in ("ETag", "Last-Modified", "Cache-Control"):
+            val = resp.headers.get(h)
+            if val:
+                flask_resp.headers[h] = val
         return flask_resp
     except httpx.RequestError as exc:
         return jsonify({"error": str(exc), "detail": "Backend unreachable"}), 502
@@ -104,6 +136,16 @@ def strategy_26():
 @app.get("/strategy/27")
 def strategy_27():
     return render_template("strategy_27.html")
+
+
+@app.get("/strategy/28")
+def strategy_28():
+    return render_template("strategy_28.html")
+
+
+@app.get("/strategy/29")
+def strategy_29():
+    return render_template("strategy_29.html")
 
 
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
@@ -271,12 +313,81 @@ def middleware_clear():
     return _proxy("DELETE", "/v1/middleware/cache")
 
 
+# ── HTTP Caching / ETag (2.8) proxy ─────────────────────────────────────────────────
+# Uses _proxy_conditional so If-None-Match / If-Modified-Since and
+# ETag / Last-Modified / Cache-Control headers are properly forwarded.
+
+
+@app.get("/api/http-cache/article/<int:article_id>")
+def http_cache_get_article(article_id: int):
+    return _proxy_conditional("GET", f"/v1/http-cache/article/{article_id}")
+
+
+@app.route("/api/http-cache/article/<int:article_id>", methods=["PUT"])
+def http_cache_put_article(article_id: int):
+    return _proxy("PUT", f"/v1/http-cache/article/{article_id}")
+
+
+@app.get("/api/http-cache/articles")
+def http_cache_list_articles():
+    return _proxy_conditional("GET", "/v1/http-cache/articles")
+
+
+@app.get("/api/http-cache/constants")
+def http_cache_constants():
+    return _proxy("GET", "/v1/http-cache/constants")
+
+
+@app.get("/api/http-cache/stats")
+def http_cache_stats():
+    return _proxy("GET", "/v1/http-cache/stats")
+
+
+@app.route("/api/http-cache/reset", methods=["POST"])
+def http_cache_reset():
+    return _proxy("POST", "/v1/http-cache/reset")
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 
 @app.get("/api/health")
 def health():
     return _proxy("GET", "/health")
+
+
+# ── Async aiocache (2.9) proxy ───────────────────────────────────────────────
+
+
+@app.get("/api/aiocache/recipe/<int:recipe_id>")
+def aiocache_get_recipe(recipe_id: int):
+    return _proxy("GET", f"/v1/aiocache/recipe/{recipe_id}")
+
+
+@app.get("/api/aiocache/recipes")
+def aiocache_batch_recipes():
+    ids = request.args.get("ids", "1,2,3,4")
+    return _proxy("GET", f"/v1/aiocache/recipes?ids={ids}")
+
+
+@app.route("/api/aiocache/recipe/<int:recipe_id>", methods=["DELETE"])
+def aiocache_evict_recipe(recipe_id: int):
+    return _proxy("DELETE", f"/v1/aiocache/recipe/{recipe_id}")
+
+
+@app.route("/api/aiocache/cache", methods=["DELETE"])
+def aiocache_clear():
+    return _proxy("DELETE", "/v1/aiocache/cache")
+
+
+@app.get("/api/aiocache/stats")
+def aiocache_stats():
+    return _proxy("GET", "/v1/aiocache/stats")
+
+
+@app.route("/api/aiocache/reset", methods=["POST"])
+def aiocache_reset():
+    return _proxy("POST", "/v1/aiocache/reset")
 
 
 if __name__ == "__main__":

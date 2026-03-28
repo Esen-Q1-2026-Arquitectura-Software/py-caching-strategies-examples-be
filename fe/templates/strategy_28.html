@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.8 HTTP Caching (ETag, Cache-Control) — Python Caching Showcase</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    pre { white-space: pre-wrap; word-break: break-word; }
+    .spinner { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .tab-active { background: rgb(15 23 42); border-bottom-color: rgb(99 102 241) !important; color: white; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────────── -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white transition-colors text-sm flex items-center gap-1">← Back</a>
+        <div class="h-4 border-l border-slate-700"></div>
+        <div>
+          <span class="text-amber-400 font-black text-lg">2.8</span>
+          <span class="text-white font-bold text-lg ml-2">HTTP Caching — ETag &amp; Cache-Control</span>
+        </div>
+      </div>
+      <div id="health-badge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">checking…</div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- ── Description ─────────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-amber-900 rounded-2xl p-6">
+      <h2 class="text-base font-bold text-amber-300 mb-3">What is HTTP Caching with ETags?</h2>
+      <p class="text-slate-400 text-sm leading-relaxed mb-4">
+        Unlike application-layer caches (Redis, in-memory), HTTP caching is built into the
+        <strong class="text-slate-200">protocol itself</strong>. The server sets response headers
+        (<code class="text-amber-300 font-mono text-xs">ETag</code>,
+        <code class="text-amber-300 font-mono text-xs">Last-Modified</code>,
+        <code class="text-amber-300 font-mono text-xs">Cache-Control</code>) that instruct
+        <em>any</em> HTTP-compliant client — browser, CDN, proxy — how to cache and revalidate.
+        <strong class="text-slate-200">No Redis required.</strong>
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-amber-400 font-semibold">ETag + If-None-Match</div>
+          <div class="text-slate-300">Server fingerprints each resource. Client sends the fingerprint back. Hash match → <strong>304, zero body bytes</strong>.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-amber-400 font-semibold">Cache-Control</div>
+          <div class="text-slate-300"><code class="text-amber-300 font-mono">max-age</code>, <code class="text-amber-300 font-mono">stale-while-revalidate</code>, <code class="text-amber-300 font-mono">immutable</code> — tell <em>how long</em> to trust the cached copy.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 space-y-1">
+          <div class="text-amber-400 font-semibold">Bandwidth saving</div>
+          <div class="text-slate-300">A 304 carries headers only (< 200 bytes). Skipping the body of a 5 KB resource 1 000 times saves 4.8 MB per endpoint.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Lifecycle diagram ────────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="bg-gradient-to-br from-amber-950 to-slate-900 border-b border-amber-900 px-5 py-4">
+        <h3 class="text-amber-300 font-bold text-base">ETag Conditional Request Lifecycle</h3>
+        <p class="text-slate-400 text-xs mt-1">Three possible outcomes for every GET request</p>
+      </div>
+      <div class="p-5 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
+        <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+          <div class="text-amber-400 font-bold mb-2">① First request</div>
+          <div class="text-slate-400 leading-relaxed">Client → <span class="text-white">GET /article/1</span><br>Server → <span class="text-emerald-400">200 OK</span><br>&nbsp;&nbsp;&nbsp;ETag: "a3f9b2c1…"<br>&nbsp;&nbsp;&nbsp;Cache-Control: max-age=60<br>&nbsp;&nbsp;&nbsp;Body: <span class="text-amber-300">{full JSON}</span><br><br>Client stores the ETag.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+          <div class="text-sky-400 font-bold mb-2">② Conditional GET (unchanged)</div>
+          <div class="text-slate-400 leading-relaxed">Client → <span class="text-white">GET /article/1</span><br>&nbsp;&nbsp;&nbsp;If-None-Match: "a3f9b2c1…"<br>Server checks: <span class="text-sky-400">hash matches</span><br>Server → <span class="text-sky-400">304 Not Modified</span><br>&nbsp;&nbsp;&nbsp;ETag: "a3f9b2c1…"<br>&nbsp;&nbsp;&nbsp;Body: <span class="text-sky-400">NONE (0 bytes)</span></div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+          <div class="text-rose-400 font-bold mb-2">③ Conditional GET (changed)</div>
+          <div class="text-slate-400 leading-relaxed">Content was updated — new ETag<br>Client → <span class="text-white">GET /article/1</span><br>&nbsp;&nbsp;&nbsp;If-None-Match: "a3f9b2c1…"<br>Server: <span class="text-rose-400">hash mismatch</span><br>Server → <span class="text-emerald-400">200 OK</span><br>&nbsp;&nbsp;&nbsp;ETag: <span class="text-amber-300">"e7d1f4a2…"</span> (new)<br>&nbsp;&nbsp;&nbsp;Body: <span class="text-amber-300">{updated JSON}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Tabs ─────────────────────────────────────────────────────────────── -->
+    <div>
+      <div class="flex border-b border-slate-800 text-sm mb-0">
+        <button onclick="switchTab('etag')" id="tab-etag"
+          class="tab-active px-5 py-2.5 border-b-2 border-indigo-500 font-semibold text-white transition-colors">
+          ETag Demo
+        </button>
+        <button onclick="switchTab('list')" id="tab-list"
+          class="px-5 py-2.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-medium transition-colors">
+          List ETag
+        </button>
+        <button onclick="switchTab('cc')" id="tab-cc"
+          class="px-5 py-2.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-medium transition-colors">
+          Cache-Control
+        </button>
+        <button onclick="switchTab('stats')" id="tab-stats"
+          class="px-5 py-2.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-medium transition-colors">
+          Stats
+        </button>
+      </div>
+
+      <!-- ── TAB: ETag Demo ─────────────────────────────────────────────────── -->
+      <div id="panel-etag" class="bg-slate-900 border border-slate-800 rounded-b-2xl border-t-0 overflow-hidden">
+        <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800">
+
+          <!-- Left: controls -->
+          <div class="p-5 space-y-5">
+            <div>
+              <p class="text-slate-400 text-xs mb-3 leading-relaxed">
+                Select an article, then walk through the steps below to observe
+                ETag-based conditional caching in action.
+              </p>
+              <!-- Article selector -->
+              <div class="flex flex-wrap gap-2 mb-4">
+                <span class="text-xs text-slate-500 self-center mr-1">Article:</span>
+                <button onclick="selectArticle(1)" id="art-btn-1" class="art-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-700 text-amber-100 border-2 border-amber-500">1</button>
+                <button onclick="selectArticle(2)" id="art-btn-2" class="art-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-300 border-2 border-transparent">2</button>
+                <button onclick="selectArticle(3)" id="art-btn-3" class="art-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-300 border-2 border-transparent">3</button>
+                <button onclick="selectArticle(4)" id="art-btn-4" class="art-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-300 border-2 border-transparent">4</button>
+                <button onclick="selectArticle(5)" id="art-btn-5" class="art-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-300 border-2 border-transparent">5</button>
+              </div>
+
+              <!-- Step 1 -->
+              <div class="space-y-3">
+                <div class="flex items-center gap-3">
+                  <span class="text-xs font-bold text-amber-400 w-16 shrink-0">Step 1</span>
+                  <button onclick="fetchArticle()" id="btn-fetch"
+                    class="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors">
+                    Fetch Article (GET)
+                  </button>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="flex items-center gap-3">
+                  <span class="text-xs font-bold text-sky-400 w-16 shrink-0">Step 2</span>
+                  <button onclick="conditionalGet()" id="btn-cond"
+                    class="flex-1 bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled>
+                    Conditional GET (If-None-Match)
+                  </button>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="flex items-center gap-3">
+                  <span class="text-xs font-bold text-orange-400 w-16 shrink-0">Step 3</span>
+                  <button onclick="toggleEdit()" id="btn-edit"
+                    class="flex-1 bg-orange-700 hover:bg-orange-600 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled>
+                    Edit Article Body (PUT)
+                  </button>
+                </div>
+
+                <!-- Edit area (hidden until step 3) -->
+                <div id="edit-area" class="hidden space-y-2">
+                  <textarea id="edit-body"
+                    class="w-full h-28 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-slate-200 font-mono resize-none focus:outline-none focus:border-orange-500"
+                    placeholder="Edit the article body here…"></textarea>
+                  <button onclick="updateArticle()" id="btn-save"
+                    class="w-full bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors">
+                    Save Changes (PUT /article)
+                  </button>
+                </div>
+
+                <!-- Step 4 -->
+                <div class="flex items-center gap-3">
+                  <span class="text-xs font-bold text-rose-400 w-16 shrink-0">Step 4</span>
+                  <button onclick="conditionalGetStale()" id="btn-stale"
+                    class="flex-1 bg-rose-800 hover:bg-rose-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled>
+                    Conditional GET (stale ETag)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stored ETag display -->
+            <div class="bg-slate-800 rounded-xl p-3 space-y-1.5">
+              <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide">Client-side ETag store</div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Current:</span>
+                <code id="etag-display" class="text-xs text-amber-300 font-mono break-all">—</code>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Stale:</span>
+                <code id="etag-stale-display" class="text-xs text-rose-400 font-mono break-all">—</code>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Last-Modified:</span>
+                <code id="lm-display" class="text-xs text-teal-300 font-mono break-all">—</code>
+              </div>
+            </div>
+
+            <!-- Reset -->
+            <button onclick="resetArticles()" class="w-full text-xs text-slate-500 hover:text-slate-300 border border-slate-700 hover:border-slate-600 rounded-lg py-2 transition-colors">
+              ↺ Reset all articles to seed data
+            </button>
+          </div>
+
+          <!-- Right: response panel -->
+          <div class="p-5 space-y-4">
+            <div class="flex items-center justify-between">
+              <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wide">Response</h4>
+              <div id="status-badge" class="hidden text-xs font-bold px-3 py-1 rounded-full"></div>
+            </div>
+
+            <!-- Headers display -->
+            <div id="headers-panel" class="hidden bg-slate-800 rounded-xl p-3 space-y-1.5">
+              <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">HTTP Headers Received</div>
+              <div class="flex items-start gap-2">
+                <span class="text-xs text-slate-500 w-28 shrink-0">ETag</span>
+                <code id="resp-etag" class="text-xs text-amber-300 font-mono break-all">—</code>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="text-xs text-slate-500 w-28 shrink-0">Last-Modified</span>
+                <code id="resp-lm" class="text-xs text-teal-300 font-mono break-all">—</code>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="text-xs text-slate-500 w-28 shrink-0">Cache-Control</span>
+                <code id="resp-cc" class="text-xs text-sky-300 font-mono break-all">—</code>
+              </div>
+            </div>
+
+            <!-- Bandwidth indicator -->
+            <div id="bandwidth-panel" class="hidden rounded-xl p-3 border">
+              <div id="bandwidth-label" class="text-xs font-bold mb-1"></div>
+              <div id="bandwidth-detail" class="text-xs text-slate-400"></div>
+            </div>
+
+            <!-- Body / status display -->
+            <div id="resp-panel" class="hidden">
+              <div class="bg-slate-800 rounded-xl overflow-hidden">
+                <div class="flex items-center justify-between bg-slate-700 px-3 py-1.5">
+                  <span class="text-xs text-slate-400 font-mono">Response body</span>
+                  <span id="resp-bytes" class="text-xs text-slate-500"></span>
+                </div>
+                <pre id="resp-body" class="p-3 text-xs text-slate-300 max-h-64 overflow-y-auto leading-relaxed"></pre>
+              </div>
+            </div>
+
+            <div id="resp-empty" class="text-slate-600 text-xs text-center py-8">
+              Click "Fetch Article" to begin the demo →
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── TAB: List ETag ─────────────────────────────────────────────────── -->
+      <div id="panel-list" class="hidden bg-slate-900 border border-slate-800 rounded-b-2xl border-t-0 p-5 space-y-4">
+        <div class="text-slate-400 text-sm leading-relaxed">
+          <p>The <strong class="text-slate-200">list endpoint</strong> computes its ETag from a fingerprint of every article's
+          <code class="text-amber-300 font-mono text-xs">(id, version)</code> pair. Updating even a single
+          article increments its <code class="text-amber-300 font-mono text-xs">version</code>, changing the list ETag
+          and forcing a full re-fetch for all clients that hold the stale list ETag.</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="space-y-3">
+            <button onclick="fetchList()" class="w-full bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors">
+              Fetch All Articles (GET /articles)
+            </button>
+            <button onclick="conditionalList()" id="btn-cond-list"
+              class="w-full bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled>
+              Conditional GET (If-None-Match list ETag)
+            </button>
+            <div class="bg-slate-800 rounded-xl p-3 space-y-1.5">
+              <div class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Stored list ETag</div>
+              <code id="list-etag-display" class="text-xs text-amber-300 font-mono break-all">—</code>
+            </div>
+          </div>
+          <div>
+            <div id="list-resp-panel" class="hidden">
+              <div class="bg-slate-800 rounded-xl overflow-hidden">
+                <div class="flex items-center justify-between bg-slate-700 px-3 py-1.5">
+                  <span class="text-xs text-slate-400 font-mono">Response</span>
+                  <div id="list-status-badge" class="text-xs font-bold px-3 py-0.5 rounded-full"></div>
+                </div>
+                <pre id="list-resp-body" class="p-3 text-xs text-slate-300 max-h-56 overflow-y-auto leading-relaxed"></pre>
+              </div>
+            </div>
+            <div id="list-resp-empty" class="text-slate-600 text-xs text-center py-8">Click a button to fetch the list →</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── TAB: Cache-Control ─────────────────────────────────────────────── -->
+      <div id="panel-cc" class="hidden bg-slate-900 border border-slate-800 rounded-b-2xl border-t-0 p-5 space-y-5">
+
+        <!-- Directive reference table -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="border-b border-slate-800">
+                <th class="text-left py-2 pr-4 text-slate-400 font-semibold">Directive</th>
+                <th class="text-left py-2 pr-4 text-slate-400 font-semibold">Applies to</th>
+                <th class="text-left py-2 text-slate-400 font-semibold">Effect</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">no-store</code></td>
+                <td class="py-2 pr-4 text-slate-400">All caches</td>
+                <td class="py-2 text-slate-400">Never cache — for passwords, payment pages</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">no-cache</code></td>
+                <td class="py-2 pr-4 text-slate-400">All caches</td>
+                <td class="py-2 text-slate-400">Cache allowed, but MUST revalidate before serving</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">private</code></td>
+                <td class="py-2 pr-4 text-slate-400">Shared caches (CDN)</td>
+                <td class="py-2 text-slate-400">CDN/proxy must NOT cache — browser-only</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">public</code></td>
+                <td class="py-2 pr-4 text-slate-400">CDN / proxies</td>
+                <td class="py-2 text-slate-400">CDNs may cache even if Authorization header present</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">max-age=N</code></td>
+                <td class="py-2 pr-4 text-slate-400">Browser</td>
+                <td class="py-2 text-slate-400">Serve cached copy for N seconds without revalidating</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">s-maxage=N</code></td>
+                <td class="py-2 pr-4 text-slate-400">CDN / shared</td>
+                <td class="py-2 text-slate-400">Overrides max-age for shared caches only</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">stale-while-revalidate=N</code></td>
+                <td class="py-2 pr-4 text-slate-400">Browser + CDN</td>
+                <td class="py-2 text-slate-400">Serve stale content for N s while fetching fresh in background</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">immutable</code></td>
+                <td class="py-2 pr-4 text-slate-400">Browser</td>
+                <td class="py-2 text-slate-400">Never revalidate within max-age — even on hard refresh</td>
+              </tr>
+              <tr>
+                <td class="py-2 pr-4"><code class="text-amber-300 font-mono">must-revalidate</code></td>
+                <td class="py-2 pr-4 text-slate-400">All caches</td>
+                <td class="py-2 text-slate-400">Disallow stale serving even if origin is unavailable</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Immutable demo -->
+        <div class="border border-slate-700 rounded-xl overflow-hidden">
+          <div class="bg-slate-800 px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+            <div>
+              <span class="text-slate-200 font-bold text-sm">Immutable Constants Endpoint</span>
+              <p class="text-slate-500 text-xs mt-0.5">
+                <code class="text-amber-300 font-mono">GET /v1/http-cache/constants</code>
+                — Cache-Control: public, max-age=86400, immutable
+              </p>
+            </div>
+            <button onclick="fetchConstants()"
+              class="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors">
+              Fetch
+            </button>
+          </div>
+          <div id="constants-panel" class="p-4 hidden">
+            <div class="flex items-center gap-3 mb-3">
+              <div id="constants-status" class="text-xs font-bold px-3 py-1 rounded-full"></div>
+              <code id="constants-cc" class="text-xs text-sky-300 font-mono"></code>
+            </div>
+            <pre id="constants-body" class="bg-slate-800 rounded-lg p-3 text-xs text-slate-300 max-h-56 overflow-y-auto leading-relaxed"></pre>
+          </div>
+          <div id="constants-empty" class="p-4 text-slate-600 text-xs text-center">Click Fetch to see the immutable resource →</div>
+        </div>
+      </div>
+
+      <!-- ── TAB: Stats ─────────────────────────────────────────────────────── -->
+      <div id="panel-stats" class="hidden bg-slate-900 border border-slate-800 rounded-b-2xl border-t-0 p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-slate-200 font-bold text-sm">Live 200 vs 304 Counter</h3>
+          <button onclick="loadStats()"
+            class="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors">
+            ↻ Refresh
+          </button>
+        </div>
+        <div id="stats-panel" class="hidden space-y-4 fade-in">
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+            <div class="bg-slate-800 rounded-xl p-4">
+              <div id="stat-200s" class="text-3xl font-black text-emerald-400">—</div>
+              <div class="text-slate-500 text-xs mt-1">Full 200 responses</div>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-4">
+              <div id="stat-304s" class="text-3xl font-black text-sky-400">—</div>
+              <div class="text-slate-500 text-xs mt-1">304 Not Modified</div>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-4">
+              <div id="stat-ratio" class="text-3xl font-black text-amber-400">—</div>
+              <div class="text-slate-500 text-xs mt-1">Not Modified %</div>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-4">
+              <div id="stat-total" class="text-3xl font-black text-violet-400">—</div>
+              <div class="text-slate-500 text-xs mt-1">Total requests</div>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <div class="bg-slate-800 rounded-xl p-3 flex items-start gap-2">
+              <span class="text-sky-400 font-bold w-28 shrink-0">ETag 304s</span>
+              <span id="stat-etag304" class="text-slate-300 font-mono">—</span>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-3 flex items-start gap-2">
+              <span class="text-teal-400 font-bold w-28 shrink-0">Last-Mod 304s</span>
+              <span id="stat-lm304" class="text-slate-300 font-mono">—</span>
+            </div>
+          </div>
+          <p id="stats-note" class="text-slate-500 text-xs text-center"></p>
+        </div>
+        <div id="stats-empty" class="text-slate-600 text-xs text-center py-8">Click Refresh to load stats →</div>
+      </div>
+    </div>
+
+    <!-- ── Code reference panel ─────────────────────────────────────────────── -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="border-b border-slate-800 px-5 py-4">
+        <h3 class="text-slate-200 font-bold text-base">FastAPI Implementation</h3>
+        <p class="text-slate-400 text-xs mt-1">Zero Redis — pure HTTP headers set directly in JSONResponse</p>
+      </div>
+      <div class="p-5">
+        <pre class="bg-slate-800 rounded-xl p-4 text-xs text-slate-300 leading-relaxed overflow-x-auto"><code><span class="text-slate-500"># be/routers/s28_http_cache.py</span>
+<span class="text-violet-400">import</span> hashlib, json
+<span class="text-violet-400">from</span> datetime <span class="text-violet-400">import</span> datetime, timezone
+<span class="text-violet-400">from</span> email.utils <span class="text-violet-400">import</span> format_datetime, parsedate_to_datetime
+<span class="text-violet-400">from</span> fastapi <span class="text-violet-400">import</span> Request
+<span class="text-violet-400">from</span> fastapi.responses <span class="text-violet-400">import</span> JSONResponse, Response
+
+<span class="text-slate-500"># Compute ETag from SHA-256 of sorted JSON serialisation</span>
+<span class="text-amber-300">def</span> <span class="text-sky-300">_compute_etag</span>(data: dict) -&gt; str:
+    s = json.dumps(data, sort_keys=<span class="text-amber-300">True</span>, default=str)
+    <span class="text-violet-400">return</span> <span class="text-emerald-400">f'"{hashlib.sha256(s.encode()).hexdigest()[:16]}"'</span>
+
+<span class="text-amber-300">@router.get</span>(<span class="text-emerald-400">"/article/{article_id}"</span>)
+<span class="text-violet-400">async def</span> <span class="text-sky-300">get_article</span>(article_id: int, request: Request, db=Depends(get_db)):
+    article = <span class="text-violet-400">await</span> db.get(NewsArticle, article_id)
+    data     = _article_dict(article)
+    etag     = _compute_etag(data)
+    lm_str   = _fmt_last_modified(article.updated_at)
+
+    <span class="text-slate-500"># ── Conditional GET: ETag ──────────────────────────────</span>
+    if_none_match = request.headers.get(<span class="text-emerald-400">"if-none-match"</span>)
+    <span class="text-violet-400">if</span> if_none_match == etag:
+        <span class="text-violet-400">return</span> Response(                              <span class="text-slate-500"># 304 — no body!</span>
+            status_code=<span class="text-amber-300">304</span>,
+            headers={<span class="text-emerald-400">"ETag"</span>: etag, <span class="text-emerald-400">"Cache-Control"</span>: <span class="text-emerald-400">"public, max-age=60..."</span>},
+        )
+
+    <span class="text-slate-500"># ── Full 200 response ──────────────────────────────────</span>
+    <span class="text-violet-400">return</span> JSONResponse(
+        content=data,
+        headers={
+            <span class="text-emerald-400">"ETag"</span>: etag,
+            <span class="text-emerald-400">"Last-Modified"</span>: lm_str,
+            <span class="text-emerald-400">"Cache-Control"</span>: <span class="text-emerald-400">"public, max-age=60, stale-while-revalidate=30"</span>,
+        },
+    )</code></pre>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // ── State ──────────────────────────────────────────────────────────────────
+    let selectedArticle = 1;
+    let storedEtag      = null;  // ETag saved from last 200 response
+    let staleEtag       = null;  // ETag that became stale after PUT
+    let storedLM        = null;  // Last-Modified saved from last 200 response
+    let storedListEtag  = null;
+
+    // ── Health check ──────────────────────────────────────────────────────────
+    (async () => {
+      try {
+        const r = await fetch('/api/health');
+        const d = await r.json();
+        const badge = document.getElementById('health-badge');
+        badge.textContent = d.status === 'ok' ? '● healthy' : '● degraded';
+        badge.className = 'text-xs px-3 py-1.5 rounded-full font-mono '
+          + (d.status === 'ok' ? 'bg-emerald-950 text-emerald-400' : 'bg-amber-950 text-amber-400');
+      } catch {}
+    })();
+
+    // ── Tab switching ─────────────────────────────────────────────────────────
+    function switchTab(name) {
+      const tabs   = ['etag', 'list', 'cc', 'stats'];
+      const panels = ['etag', 'list', 'cc', 'stats'];
+      tabs.forEach(t => {
+        document.getElementById('tab-' + t).classList.remove('tab-active');
+        document.getElementById('tab-' + t).style.borderBottomColor = 'transparent';
+        document.getElementById('panel-' + panels[tabs.indexOf(t)]).classList.add('hidden');
+      });
+      document.getElementById('tab-' + name).classList.add('tab-active');
+      document.getElementById('tab-' + name).style.borderBottomColor = 'rgb(99 102 241)';
+      document.getElementById('panel-' + name).classList.remove('hidden');
+      if (name === 'stats') loadStats();
+    }
+
+    // ── Article selector ──────────────────────────────────────────────────────
+    function selectArticle(n) {
+      selectedArticle = n;
+      document.querySelectorAll('.art-btn').forEach((b, i) => {
+        const active = (i + 1) === n;
+        b.className = 'art-btn px-3 py-1.5 rounded-lg text-xs font-semibold border-2 '
+          + (active ? 'bg-amber-700 text-amber-100 border-amber-500'
+                    : 'bg-slate-700 text-slate-300 border-transparent');
+      });
+      // Reset state when switching articles
+      storedEtag = null; staleEtag = null; storedLM = null;
+      updateEtagDisplays();
+      document.getElementById('btn-cond').disabled = true;
+      document.getElementById('btn-edit').disabled = true;
+      document.getElementById('btn-stale').disabled = true;
+      hideEditArea();
+      clearResponse();
+    }
+
+    // ── ETag display helpers ──────────────────────────────────────────────────
+    function updateEtagDisplays() {
+      document.getElementById('etag-display').textContent       = storedEtag || '—';
+      document.getElementById('etag-stale-display').textContent = staleEtag  || '—';
+      document.getElementById('lm-display').textContent         = storedLM   || '—';
+    }
+
+    // ── Response display helpers ──────────────────────────────────────────────
+    function showResponse(statusCode, headers, body, bodyBytes, note) {
+      document.getElementById('resp-empty').classList.add('hidden');
+      document.getElementById('resp-panel').classList.remove('hidden');
+      document.getElementById('resp-panel').classList.add('fade-in');
+
+      const badge = document.getElementById('status-badge');
+      badge.classList.remove('hidden');
+      const is304 = statusCode === 304;
+      const is200 = statusCode === 200;
+      badge.textContent = statusCode + (is304 ? ' Not Modified ✓' : is200 ? ' OK' : '');
+      badge.className = 'text-xs font-bold px-3 py-1 rounded-full '
+        + (is304 ? 'bg-sky-900 text-sky-300'
+         : is200 ? 'bg-emerald-900 text-emerald-300'
+                 : 'bg-rose-900 text-rose-300');
+
+      // Headers
+      const hPanel = document.getElementById('headers-panel');
+      if (headers) {
+        hPanel.classList.remove('hidden');
+        document.getElementById('resp-etag').textContent = headers['etag']          || headers['ETag']          || '—';
+        document.getElementById('resp-lm').textContent   = headers['last-modified'] || headers['Last-Modified'] || '—';
+        document.getElementById('resp-cc').textContent   = headers['cache-control'] || headers['Cache-Control'] || '—';
+      } else {
+        hPanel.classList.add('hidden');
+      }
+
+      // Bandwidth
+      const bPanel = document.getElementById('bandwidth-panel');
+      bPanel.classList.remove('hidden');
+      if (is304) {
+        bPanel.className = 'rounded-xl p-3 border bg-sky-950 border-sky-800';
+        document.getElementById('bandwidth-label').className = 'text-xs font-bold mb-1 text-sky-300';
+        document.getElementById('bandwidth-label').textContent = '⚡ 304 Not Modified — zero body bytes transferred';
+        document.getElementById('bandwidth-detail').textContent = note || 'Client already has the latest version. Only headers were sent.';
+      } else if (is200) {
+        bPanel.className = 'rounded-xl p-3 border bg-slate-800 border-slate-700';
+        document.getElementById('bandwidth-label').className = 'text-xs font-bold mb-1 text-slate-300';
+        document.getElementById('bandwidth-label').textContent = '📦 Full 200 response — body transferred';
+        document.getElementById('bandwidth-detail').textContent = note || `Body: ~${bodyBytes} bytes. Store the ETag and use it in the next request.`;
+      }
+
+      // Body
+      if (body !== null && body !== undefined) {
+        document.getElementById('resp-body').textContent = typeof body === 'string'
+          ? body
+          : JSON.stringify(body, null, 2);
+        document.getElementById('resp-bytes').textContent = bodyBytes + ' bytes';
+      } else {
+        document.getElementById('resp-body').textContent = '(no body — 304 Not Modified)';
+        document.getElementById('resp-bytes').textContent = '0 bytes';
+      }
+    }
+
+    function clearResponse() {
+      document.getElementById('resp-empty').classList.remove('hidden');
+      document.getElementById('resp-panel').classList.add('hidden');
+      document.getElementById('status-badge').classList.add('hidden');
+      document.getElementById('headers-panel').classList.add('hidden');
+      document.getElementById('bandwidth-panel').classList.add('hidden');
+    }
+
+    function hideEditArea() {
+      document.getElementById('edit-area').classList.add('hidden');
+    }
+
+    // ── Step 1: Fetch article (no conditional) ────────────────────────────────
+    async function fetchArticle() {
+      const btn = document.getElementById('btn-fetch');
+      btn.textContent = '⟳ Fetching…'; btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/http-cache/article/${selectedArticle}`, { cache: 'no-store' });
+        storedEtag = resp.headers.get('ETag');
+        storedLM   = resp.headers.get('Last-Modified');
+        if (resp.status === 200) {
+          const data = await resp.json();
+          const body = JSON.stringify(data, null, 2);
+          showResponse(200, Object.fromEntries(resp.headers), data, body.length,
+            `ETag is now stored client-side. Click "Conditional GET" to reuse it.`);
+          // Populate edit textarea
+          document.getElementById('edit-body').value = data.body || '';
+          updateEtagDisplays();
+          document.getElementById('btn-cond').disabled = false;
+          document.getElementById('btn-edit').disabled = false;
+        }
+      } catch(e) {
+        showResponse(500, null, {error: e.toString()}, 0, '');
+      } finally {
+        btn.textContent = 'Fetch Article (GET)'; btn.disabled = false;
+      }
+    }
+
+    // ── Step 2: Conditional GET with stored ETag ──────────────────────────────
+    async function conditionalGet() {
+      if (!storedEtag) return;
+      const btn = document.getElementById('btn-cond');
+      btn.textContent = '⟳ Sending…'; btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/http-cache/article/${selectedArticle}`, {
+          headers: { 'If-None-Match': storedEtag },
+          cache: 'no-store'
+        });
+        if (resp.status === 304) {
+          showResponse(304, Object.fromEntries(resp.headers), null, 0,
+            `Server confirmed: ETag ${storedEtag} still valid. No body was sent. ` +
+            `Next: update the article (Step 3) then try again to see a 200.`);
+        } else if (resp.status === 200) {
+          const data = await resp.json();
+          storedEtag = resp.headers.get('ETag');
+          updateEtagDisplays();
+          const body = JSON.stringify(data, null, 2);
+          showResponse(200, Object.fromEntries(resp.headers), data, body.length,
+            `ETag changed since last check — full body returned.`);
+        }
+      } catch(e) {
+        showResponse(500, null, {error: e.toString()}, 0, '');
+      } finally {
+        btn.textContent = 'Conditional GET (If-None-Match)'; btn.disabled = false;
+      }
+    }
+
+    // ── Step 3: Toggle edit area ──────────────────────────────────────────────
+    function toggleEdit() {
+      const area = document.getElementById('edit-area');
+      area.classList.toggle('hidden');
+    }
+
+    // ── Step 3 (save): PUT updated article ───────────────────────────────────
+    async function updateArticle() {
+      const newBody = document.getElementById('edit-body').value.trim();
+      if (!newBody) { alert('Body cannot be empty.'); return; }
+
+      const btn = document.getElementById('btn-save');
+      btn.textContent = '⟳ Saving…'; btn.disabled = true;
+
+      try {
+        const resp = await fetch(`/api/http-cache/article/${selectedArticle}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: newBody }),
+          cache: 'no-store',
+        });
+        const data = await resp.json();
+        const body = JSON.stringify(data, null, 2);
+
+        // The old ETag is now stale — record it
+        staleEtag  = storedEtag;
+        storedEtag = resp.headers.get('ETag') || data._meta?.etag || null;
+        storedLM   = resp.headers.get('Last-Modified') || null;
+        updateEtagDisplays();
+        hideEditArea();
+
+        showResponse(resp.status, Object.fromEntries(resp.headers), data, body.length,
+          `Article updated. ETag changed from ${staleEtag} → ${storedEtag}. ` +
+          `Use Step 4 to send the OLD (stale) ETag — you'll receive a 200 instead of 304.`);
+
+        document.getElementById('btn-stale').disabled = !staleEtag;
+      } catch(e) {
+        showResponse(500, null, {error: e.toString()}, 0, '');
+      } finally {
+        btn.textContent = 'Save Changes (PUT /article)'; btn.disabled = false;
+      }
+    }
+
+    // ── Step 4: Conditional GET with STALE ETag ───────────────────────────────
+    async function conditionalGetStale() {
+      if (!staleEtag) return;
+      const btn = document.getElementById('btn-stale');
+      btn.textContent = '⟳ Sending…'; btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/http-cache/article/${selectedArticle}`, {
+          headers: { 'If-None-Match': staleEtag },
+          cache: 'no-store'
+        });
+        if (resp.status === 200) {
+          const data = await resp.json();
+          storedEtag = resp.headers.get('ETag');
+          staleEtag  = null;
+          updateEtagDisplays();
+          const body = JSON.stringify(data, null, 2);
+          showResponse(200, Object.fromEntries(resp.headers), data, body.length,
+            `Cache busted! Stale ETag did not match → server returned full 200 response with new content.`);
+          document.getElementById('btn-stale').disabled = true;
+        } else {
+          showResponse(resp.status, Object.fromEntries(resp.headers), null, 0, '');
+        }
+      } catch(e) {
+        showResponse(500, null, {error: e.toString()}, 0, '');
+      } finally {
+        btn.textContent = 'Conditional GET (stale ETag)'; btn.disabled = false;
+      }
+    }
+
+    // ── Reset ─────────────────────────────────────────────────────────────────
+    async function resetArticles() {
+      try {
+        const resp = await fetch('/api/http-cache/reset', { method: 'POST', cache: 'no-store' });
+        const data = await resp.json();
+        storedEtag = null; staleEtag = null; storedLM = null;
+        updateEtagDisplays();
+        clearResponse();
+        document.getElementById('btn-cond').disabled  = true;
+        document.getElementById('btn-edit').disabled  = true;
+        document.getElementById('btn-stale').disabled = true;
+        hideEditArea();
+        alert(`✓ Reset complete: ${data.count} articles restored to seed data.`);
+      } catch(e) {
+        alert('Reset failed: ' + e.toString());
+      }
+    }
+
+    // ── List tab ──────────────────────────────────────────────────────────────
+    async function fetchList() {
+      try {
+        const resp = await fetch('/api/http-cache/articles', { cache: 'no-store' });
+        storedListEtag = resp.headers.get('ETag');
+        document.getElementById('list-etag-display').textContent = storedListEtag || '—';
+        document.getElementById('btn-cond-list').disabled = !storedListEtag;
+
+        if (resp.status === 200) {
+          const data = await resp.json();
+          showListResponse(200, data);
+        }
+      } catch(e) {
+        showListResponse(500, {error: e.toString()});
+      }
+    }
+
+    async function conditionalList() {
+      if (!storedListEtag) return;
+      try {
+        const resp = await fetch('/api/http-cache/articles', {
+          headers: { 'If-None-Match': storedListEtag },
+          cache: 'no-store'
+        });
+        if (resp.status === 304) {
+          showListResponse(304, null);
+        } else {
+          const data = await resp.json();
+          storedListEtag = resp.headers.get('ETag');
+          document.getElementById('list-etag-display').textContent = storedListEtag || '—';
+          showListResponse(200, data);
+        }
+      } catch(e) {
+        showListResponse(500, {error: e.toString()});
+      }
+    }
+
+    function showListResponse(status, data) {
+      document.getElementById('list-resp-empty').classList.add('hidden');
+      document.getElementById('list-resp-panel').classList.remove('hidden');
+      const badge = document.getElementById('list-status-badge');
+      badge.textContent = status + (status === 304 ? ' Not Modified ✓' : status === 200 ? ' OK' : '');
+      badge.className = 'text-xs font-bold px-3 py-0.5 rounded-full '
+        + (status === 304 ? 'bg-sky-900 text-sky-300'
+         : status === 200 ? 'bg-emerald-900 text-emerald-300'
+                          : 'bg-rose-900 text-rose-300');
+      document.getElementById('list-resp-body').textContent = data
+        ? (status === 304 ? '(no body — 304 Not Modified)' : JSON.stringify(data, null, 2))
+        : '(no body)';
+    }
+
+    // ── Cache-Control tab: constants ──────────────────────────────────────────
+    async function fetchConstants() {
+      try {
+        const resp = await fetch('/api/http-cache/constants', { cache: 'no-store' });
+        const data = await resp.json();
+        document.getElementById('constants-empty').classList.add('hidden');
+        document.getElementById('constants-panel').classList.remove('hidden');
+
+        const badge = document.getElementById('constants-status');
+        badge.textContent = resp.status + ' OK';
+        badge.className = 'text-xs font-bold px-3 py-1 rounded-full bg-emerald-900 text-emerald-300';
+
+        document.getElementById('constants-cc').textContent =
+          resp.headers.get('Cache-Control') || data.cache_control || '';
+        document.getElementById('constants-body').textContent = JSON.stringify(data, null, 2);
+      } catch(e) {
+        document.getElementById('constants-body').textContent = 'Error: ' + e.toString();
+      }
+    }
+
+    // ── Stats tab ─────────────────────────────────────────────────────────────
+    async function loadStats() {
+      try {
+        const resp = await fetch('/api/http-cache/stats', { cache: 'no-store' });
+        const d    = await resp.json();
+        document.getElementById('stats-empty').classList.add('hidden');
+        document.getElementById('stats-panel').classList.remove('hidden');
+        document.getElementById('stat-200s').textContent    = d.full_200s;
+        document.getElementById('stat-304s').textContent    = d.total_304s;
+        document.getElementById('stat-ratio').textContent   = d.not_modified_ratio_pct + '%';
+        document.getElementById('stat-total').textContent   = d.total_requests;
+        document.getElementById('stat-etag304').textContent = d.etag_304s;
+        document.getElementById('stat-lm304').textContent   = d.last_modified_304s;
+        document.getElementById('stats-note').textContent   = d.note;
+      } catch(e) {
+        document.getElementById('stats-empty').classList.remove('hidden');
+        document.getElementById('stats-empty').textContent = 'Error loading stats: ' + e.toString();
+      }
+    }
+  </script>
+
+</body>
+</html>

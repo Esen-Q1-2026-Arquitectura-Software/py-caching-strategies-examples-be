@@ -56,3 +56,31 @@ class Track(Base):
     album = Column(String(200), nullable=False)
     genre = Column(String(50), nullable=False)
     duration_s = Column(Integer, nullable=False)
+
+
+class NewsArticle(Base):
+    """News articles — source of truth for the 2.8 HTTP Caching (ETag/Cache-Control) demo."""
+
+    __tablename__ = "news_articles"
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)
+    summary = Column(String(500), nullable=False)
+    body = Column(String(2000), nullable=False)
+    author = Column(String(100), nullable=False)
+    category = Column(String(50), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    updated_at = Column(
+        Float, nullable=False
+    )  # Unix timestamp — used for Last-Modified
+
+
+class Recipe(Base):
+    """Recipes table — source of truth for the 2.9 Async aiocache demo."""
+
+    __tablename__ = "recipes"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+    cuisine = Column(String(80), nullable=False)
+    prep_minutes = Column(Integer, nullable=False)
+    ingredients = Column(JSON, nullable=False)
+    instructions = Column(String(1000), nullable=False)

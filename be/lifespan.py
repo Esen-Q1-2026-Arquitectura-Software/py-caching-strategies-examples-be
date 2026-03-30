@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import core.redis_client as _redis_mod
 import redis.asyncio as aioredis
 import routers.s25_write_behind as _s25
+import routers.s216_event_driven as _s216
 from core.database import engine
 from core.models import Base
 from core.seed import seed_database
@@ -41,6 +42,11 @@ async def lifespan(app: FastAPI):
         _s25._wb_worker_task = asyncio.create_task(_s25._write_behind_worker())
         print("Write-Behind background worker started.")
 
+    # ── Start 2.16 Event-Driven Cache Invalidation Pub/Sub listener ───────────
+    if _redis_mod._redis:
+        _s216._listener_task = asyncio.create_task(_s216._invalidation_listener())
+        print("[2.16] Pub/Sub invalidation listener started.")
+
     yield  # ── App running ───────────────────────────────────────────────────
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
@@ -48,6 +54,13 @@ async def lifespan(app: FastAPI):
         _s25._wb_worker_task.cancel()
         try:
             await _s25._wb_worker_task
+        except asyncio.CancelledError:
+            pass
+
+    if _s216._listener_task is not None:
+        _s216._listener_task.cancel()
+        try:
+            await _s216._listener_task
         except asyncio.CancelledError:
             pass
 

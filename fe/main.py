@@ -755,5 +755,63 @@ def warming_stats_reset():
     return _proxy("POST", "/v1/warming/stats/reset")
 
 
+# ── Event-Driven Cache Invalidation (2.16) page + proxy ──────────────────────
+
+
+@app.get("/strategy/216")
+def strategy_216():
+    return render_template("strategy_216.html")
+
+
+@app.get("/api/events/product/<int:product_id>")
+def events_get_product(product_id: int):
+    return _proxy("GET", f"/v1/events/product/{product_id}")
+
+
+@app.get("/api/events/order/<int:order_id>")
+def events_get_order(order_id: int):
+    return _proxy("GET", f"/v1/events/order/{order_id}")
+
+
+@app.route("/api/events/product/<int:product_id>", methods=["PUT"])
+def events_update_product(product_id: int):
+    return _proxy("PUT", f"/v1/events/product/{product_id}")
+
+
+@app.route("/api/events/order/<int:order_id>", methods=["PUT"])
+def events_update_order(order_id: int):
+    return _proxy("PUT", f"/v1/events/order/{order_id}")
+
+
+@app.route("/api/events/invalidate/key", methods=["POST"])
+def events_invalidate_key():
+    return _proxy("POST", "/v1/events/invalidate/key")
+
+
+@app.route("/api/events/invalidate/tag/<tag>", methods=["POST"])
+def events_invalidate_tag(tag: str):
+    return _proxy("POST", f"/v1/events/invalidate/tag/{tag}")
+
+
+@app.get("/api/events/keys/inspect")
+def events_inspect_keys():
+    return _proxy("GET", "/v1/events/keys/inspect")
+
+
+@app.get("/api/events/pubsub/events")
+def events_pubsub_events():
+    return _proxy("GET", "/v1/events/pubsub/events")
+
+
+@app.get("/api/events/stats")
+def events_stats():
+    return _proxy("GET", "/v1/events/stats")
+
+
+@app.route("/api/events/reset", methods=["POST"])
+def events_reset():
+    return _proxy("POST", "/v1/events/reset")
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

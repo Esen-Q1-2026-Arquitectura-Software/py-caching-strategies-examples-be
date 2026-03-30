@@ -748,6 +748,55 @@
         </div>
       </a>
 
+      <a href="/strategy/216" class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-purple-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-purple-400 leading-none">2.16</span>
+            <span class="badge bg-purple-950 text-purple-300 mt-1 border border-purple-800">Pub/Sub</span>
+          </div>
+          <h3 class="text-base font-bold text-white mb-2">Event-Driven Cache Invalidation</h3>
+          <p class="text-slate-400 text-xs leading-relaxed mb-3">
+            Invalidate stale keys the instant data changes — no TTL wait. A Redis Pub/Sub listener
+            deletes cache entries across all instances within milliseconds. Tag groups let one
+            event purge an entire resource family in a single shot.
+          </p>
+          <ul class="text-slate-400 text-xs space-y-1 mb-4">
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-purple-500 flex-shrink-0"></span>
+              <span>Direct key invalidation via <code class="text-purple-300 font-mono">PUBLISH</code> + background listener</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-fuchsia-500 flex-shrink-0"></span>
+              <span>Tag-based group invalidation — purge all "products" keys in one event</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-purple-500 flex-shrink-0"></span>
+              <span>Live event feed shows Pub/Sub messages as they arrive</span>
+            </li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-slate-800 bg-slate-900 flex items-center justify-between">
+          <div class="flex gap-4 text-xs">
+            <div class="text-center">
+              <div class="text-purple-400 font-bold">&lt;1 ms</div>
+              <div class="text-slate-500 mt-0.5">invalidation</div>
+            </div>
+            <div class="text-center">
+              <div class="text-fuchsia-400 font-bold">2 channels</div>
+              <div class="text-slate-500 mt-0.5">key + tag</div>
+            </div>
+            <div class="text-center">
+              <div class="text-violet-400 font-bold">N instances</div>
+              <div class="text-slate-500 mt-0.5">all notified</div>
+            </div>
+          </div>
+          <div class="flex items-center text-purple-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
     </section>
 
     <!-- ── How it works ─────────────────────────────────────────────────────── -->

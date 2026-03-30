@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.16 — Event-Driven Cache Invalidation</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn { transition: all .15s ease; }
+    .tab-btn.active { background: rgb(15 23 42); color: rgb(192 132 252); border-color: rgb(168 85 247); }
+    .tab-btn:not(.active) { color: #94a3b8; border-color: transparent; }
+    .tab-btn:not(.active):hover { color: #e2e8f0; background: rgb(30 41 59); }
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    table td, table th { padding: .45rem .75rem; }
+    .badge { display:inline-block; font-size:.65rem; font-weight:700; padding:.2rem .55rem; border-radius:9999px; letter-spacing:.04em; text-transform:uppercase; }
+    .event-item { animation: slideIn .3s ease; }
+    @keyframes slideIn { from{opacity:0;transform:translateX(-8px)} to{opacity:1;transform:translateX(0)} }
+    .pulse-dot { animation: pulseDot 1.4s ease-in-out infinite; }
+    @keyframes pulseDot { 0%,100%{opacity:1} 50%{opacity:.3} }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-500 hover:text-slate-300 text-sm transition-colors">← Back</a>
+        <span class="text-slate-700">|</span>
+        <span class="text-purple-400 font-bold text-sm font-mono">2.16</span>
+        <span class="text-slate-300 font-semibold text-sm">Event-Driven Cache Invalidation</span>
+      </div>
+      <span class="text-xs px-2.5 py-1 rounded-full bg-purple-950 text-purple-300 font-semibold border border-purple-800">Pub/Sub + Tag Groups</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Intro -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <h1 class="text-xl font-bold text-white">Event-Driven Cache Invalidation</h1>
+      <p class="text-slate-400 text-sm leading-relaxed">
+        TTL expiry is a blunt instrument — data stays stale until the timer runs out.
+        Event-driven invalidation fires <em>exactly when data changes</em>: a write publishes
+        a message to a <span class="text-purple-300 font-semibold">Redis Pub/Sub channel</span>,
+        a background listener on every app instance receives it and deletes the stale key immediately.
+        <span class="text-fuchsia-300 font-semibold">Tag-based invalidation</span> extends this: keys
+        register under tag groups so an entire resource family can be purged with a single event.
+      </p>
+
+      <!-- Architecture flow -->
+      <div class="bg-slate-800 rounded-xl p-4">
+        <div class="text-xs text-slate-500 font-mono mb-3 uppercase tracking-wider">Architecture — Data flow</div>
+        <div class="flex items-center gap-1 flex-wrap text-xs font-mono">
+          <span class="px-2 py-1 bg-orange-900 text-orange-300 rounded border border-orange-700">PUT /product/3</span>
+          <span class="text-slate-600">→</span>
+          <span class="px-2 py-1 bg-slate-700 text-slate-300 rounded">Update DB</span>
+          <span class="text-slate-600">→</span>
+          <span class="px-2 py-1 bg-purple-900 text-purple-300 rounded border border-purple-700">PUBLISH cache:invalidate:ei216</span>
+          <span class="text-slate-600">→</span>
+          <span class="px-2 py-1 bg-fuchsia-900 text-fuchsia-300 rounded border border-fuchsia-700">Listener receives event</span>
+          <span class="text-slate-600">→</span>
+          <span class="px-2 py-1 bg-red-900 text-red-300 rounded border border-red-700">DEL ei216:product:3</span>
+          <span class="text-slate-600">→</span>
+          <span class="px-2 py-1 bg-emerald-900 text-emerald-300 rounded border border-emerald-700">Next GET: fresh DB fetch</span>
+        </div>
+      </div>
+
+      <!-- Strategy cards -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-slate-800 rounded-xl p-4 border border-purple-900">
+          <div class="text-purple-400 font-bold text-xs mb-1 uppercase tracking-wider">Strategy 1 — Direct Key</div>
+          <div class="text-slate-300 text-xs leading-relaxed">
+            Publish <code class="text-purple-300 font-mono">{"key": "ei216:product:3", "reason": "updated"}</code>
+            to <code class="text-purple-300 font-mono">cache:invalidate:ei216</code>.
+            Listener deletes exactly that key — surgical precision.
+          </div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-4 border border-fuchsia-900">
+          <div class="text-fuchsia-400 font-bold text-xs mb-1 uppercase tracking-wider">Strategy 2 — Tag Groups</div>
+          <div class="text-slate-300 text-xs leading-relaxed">
+            Keys register under tag SETs (<code class="text-fuchsia-300 font-mono">ei216:tags:products</code>).
+            Publish a tag name → listener scans the SET and deletes
+            <em>all</em> associated keys in one batch.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="border border-slate-800 rounded-2xl overflow-hidden">
+      <div class="flex bg-slate-900 border-b border-slate-800">
+        <button onclick="switchTab('demo')"     id="tab-demo"     class="tab-btn active  px-5 py-3 text-sm font-semibold border-b-2">Demo</button>
+        <button onclick="switchTab('invalidate')" id="tab-invalidate" class="tab-btn px-5 py-3 text-sm font-semibold border-b-2">Invalidate</button>
+        <button onclick="switchTab('events')"   id="tab-events"   class="tab-btn px-5 py-3 text-sm font-semibold border-b-2">
+          Live Events
+          <span id="events-dot" class="inline-block w-1.5 h-1.5 rounded-full bg-purple-400 pulse-dot ml-1"></span>
+        </button>
+        <button onclick="switchTab('stats')"    id="tab-stats"    class="tab-btn px-5 py-3 text-sm font-semibold border-b-2">Stats</button>
+      </div>
+
+      <!-- ── Tab: Demo ────────────────────────────────────────────────────── -->
+      <div id="pane-demo" class="p-5 space-y-5 fade-in bg-slate-950">
+
+        <p class="text-slate-400 text-xs leading-relaxed">
+          Follow the golden path: <strong class="text-white">1) Fetch</strong> a product (MISS → cached),
+          <strong class="text-white">2) Fetch again</strong> (HIT), <strong class="text-white">3) Update</strong>
+          it (publishes invalidation), <strong class="text-white">4) Fetch once more</strong> (MISS again — cache was cleared by the listener).
+        </p>
+
+        <div class="grid grid-cols-2 gap-5">
+          <!-- Product panel -->
+          <div class="space-y-3">
+            <div class="text-xs font-bold text-purple-400 uppercase tracking-wider">Product Lookup</div>
+            <div class="flex gap-2">
+              <select id="sel-product" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-purple-500">
+                <option value="">Select product (1-10)</option>
+                <script>for(let i=1;i<=10;i++) document.write(`<option value="${i}">Product ${String(i).padStart(2,'0')}</option>`);</script>
+              </select>
+              <button onclick="fetchProduct()" class="px-4 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-lg text-sm font-semibold transition-colors">Fetch</button>
+            </div>
+            <div id="product-result" class="hidden bg-slate-900 border border-slate-800 rounded-xl p-4 text-xs font-mono space-y-2"></div>
+
+            <!-- Update form -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+              <div class="text-xs font-bold text-orange-400 uppercase tracking-wider">Update Product (triggers invalidation)</div>
+              <div class="flex gap-2">
+                <input id="inp-price" type="number" step="0.01" placeholder="New price" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500" />
+                <input id="inp-stock" type="number" placeholder="New stock" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500" />
+              </div>
+              <button onclick="updateProduct()" class="w-full py-2 bg-orange-700 hover:bg-orange-600 text-white rounded-lg text-sm font-semibold transition-colors">Update &amp; Publish Invalidation</button>
+              <div id="update-result" class="hidden bg-slate-800 border border-slate-700 rounded-lg p-3 text-xs font-mono"></div>
+            </div>
+          </div>
+
+          <!-- Order panel -->
+          <div class="space-y-3">
+            <div class="text-xs font-bold text-fuchsia-400 uppercase tracking-wider">Order Lookup</div>
+            <div class="flex gap-2">
+              <select id="sel-order" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-fuchsia-500">
+                <option value="">Select order (1-10)</option>
+                <script>for(let i=1;i<=10;i++) document.write(`<option value="${i}">Order #${i}</option>`);</script>
+              </select>
+              <button onclick="fetchOrder()" class="px-4 py-2 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded-lg text-sm font-semibold transition-colors">Fetch</button>
+            </div>
+            <div id="order-result" class="hidden bg-slate-900 border border-slate-800 rounded-xl p-4 text-xs font-mono space-y-2"></div>
+
+            <!-- Update order -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+              <div class="text-xs font-bold text-orange-400 uppercase tracking-wider">Update Order (triggers invalidation)</div>
+              <select id="inp-status" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500">
+                <option value="">Change status...</option>
+                <option value="pending">pending</option>
+                <option value="confirmed">confirmed</option>
+                <option value="shipped">shipped</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+              <button onclick="updateOrder()" class="w-full py-2 bg-orange-700 hover:bg-orange-600 text-white rounded-lg text-sm font-semibold transition-colors">Update &amp; Publish Invalidation</button>
+              <div id="order-update-result" class="hidden bg-slate-800 border border-slate-700 rounded-lg p-3 text-xs font-mono"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Keys inspector -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="text-xs font-bold text-slate-400 uppercase tracking-wider">Active Cache Keys</div>
+            <button onclick="inspectKeys()" class="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">Refresh</button>
+          </div>
+          <div id="keys-list" class="bg-slate-900 border border-slate-800 rounded-xl p-3 min-h-12 text-xs font-mono text-slate-500 italic">
+            Click "Refresh" to inspect Redis keys
+          </div>
+        </div>
+
+        <div class="flex justify-end">
+          <button onclick="resetAll()" class="text-xs px-4 py-2 bg-red-950 hover:bg-red-900 text-red-400 border border-red-800 rounded-lg transition-colors">Reset All (flush cache + stats)</button>
+        </div>
+      </div>
+
+      <!-- ── Tab: Invalidate ──────────────────────────────────────────────── -->
+      <div id="pane-invalidate" class="p-5 space-y-5 fade-in bg-slate-950 hidden">
+
+        <!-- Direct key invalidation -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+          <div class="text-xs font-bold text-purple-400 uppercase tracking-wider">Direct Key Invalidation</div>
+          <p class="text-slate-400 text-xs">Publish an exact cache key to <code class="text-purple-300 font-mono">cache:invalidate:ei216</code>. The listener will delete that key immediately.</p>
+          <div class="flex gap-2">
+            <input id="inp-key" type="text" placeholder="e.g. ei216:product:3" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-purple-500" />
+            <input id="inp-reason" type="text" placeholder="reason (optional)" class="w-40 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-purple-500" />
+            <button onclick="invalidateKey()" class="px-4 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-lg text-sm font-semibold transition-colors">Publish</button>
+          </div>
+          <div id="key-invalidate-result" class="hidden text-xs font-mono bg-slate-800 rounded-lg p-3 border border-slate-700"></div>
+        </div>
+
+        <!-- Tag group invalidation -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+          <div class="text-xs font-bold text-fuchsia-400 uppercase tracking-wider">Tag-Group Invalidation</div>
+          <p class="text-slate-400 text-xs">Publish a tag name to <code class="text-fuchsia-300 font-mono">cache:tags:invalidate:ei216</code>. All keys registered under that tag are deleted in one batch.</p>
+
+          <!-- Quick-fire tag buttons -->
+          <div class="flex flex-wrap gap-2">
+            <span class="text-xs text-slate-500 self-center">Quick tags:</span>
+            <button onclick="invalidateTag('products')"   class="text-xs px-3 py-1.5 bg-purple-900 hover:bg-purple-800 text-purple-300 border border-purple-700 rounded-full transition-colors font-mono">products</button>
+            <button onclick="invalidateTag('orders')"     class="text-xs px-3 py-1.5 bg-fuchsia-900 hover:bg-fuchsia-800 text-fuchsia-300 border border-fuchsia-700 rounded-full transition-colors font-mono">orders</button>
+            <button onclick="invalidateTag('category:electronics')" class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-full transition-colors font-mono">category:electronics</button>
+            <button onclick="invalidateTag('category:books')"       class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-full transition-colors font-mono">category:books</button>
+            <button onclick="invalidateTag('user:1')"    class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 rounded-full transition-colors font-mono">user:1</button>
+          </div>
+
+          <!-- Custom tag input -->
+          <div class="flex gap-2">
+            <input id="inp-tag" type="text" placeholder="custom tag name" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-fuchsia-500" />
+            <button onclick="invalidateCustomTag()" class="px-4 py-2 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded-lg text-sm font-semibold transition-colors">Invalidate Tag</button>
+          </div>
+          <div id="tag-invalidate-result" class="hidden text-xs font-mono bg-slate-800 rounded-lg p-3 border border-slate-700"></div>
+        </div>
+
+        <!-- Tag membership table -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs font-bold text-slate-400 uppercase tracking-wider">Tag Membership in Redis</div>
+            <button onclick="inspectKeys()" class="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">Refresh</button>
+          </div>
+          <div id="tags-table" class="text-xs text-slate-500 italic">Fetch products/orders first to populate tag SETs, then refresh.</div>
+        </div>
+      </div>
+
+      <!-- ── Tab: Live Events ─────────────────────────────────────────────── -->
+      <div id="pane-events" class="p-5 space-y-4 fade-in bg-slate-950 hidden">
+
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 text-xs text-slate-400">
+            <span class="inline-block w-2 h-2 rounded-full bg-purple-400 pulse-dot"></span>
+            Polling every 2 s — events received by the Pub/Sub background listener
+          </div>
+          <div id="listener-badge" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 font-mono border border-slate-700">checking...</div>
+        </div>
+
+        <!-- Event log -->
+        <div id="event-log" class="space-y-2 min-h-40">
+          <div class="text-xs text-slate-600 italic text-center py-8">No events yet — update a product or order to trigger invalidation</div>
+        </div>
+
+        <!-- How Pub/Sub works -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+          <div class="text-xs font-bold text-slate-400 uppercase tracking-wider">How it works under the hood</div>
+          <div class="grid grid-cols-3 gap-3 text-xs text-slate-400">
+            <div class="bg-slate-800 rounded-lg p-3 space-y-1">
+              <div class="text-purple-400 font-semibold">1. Publisher</div>
+              <code class="text-slate-300 text-xs block">await redis.publish(<br>&nbsp;&nbsp;"cache:invalidate:ei216",<br>&nbsp;&nbsp;json.dumps({<br>&nbsp;&nbsp;&nbsp;&nbsp;"key": key,<br>&nbsp;&nbsp;&nbsp;&nbsp;"reason": "updated"<br>&nbsp;&nbsp;})<br>)</code>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3 space-y-1">
+              <div class="text-fuchsia-400 font-semibold">2. Channel</div>
+              <div class="text-slate-400 leading-relaxed">Redis distributes the message to <em>all</em> subscribers on <em>all</em> connected instances — no polling, instant push delivery.</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3 space-y-1">
+              <div class="text-red-400 font-semibold">3. Subscriber</div>
+              <code class="text-slate-300 text-xs block">async for msg in pubsub.listen():<br>&nbsp;&nbsp;key = data["key"]<br>&nbsp;&nbsp;await redis.delete(key)</code>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Tab: Stats ───────────────────────────────────────────────────── -->
+      <div id="pane-stats" class="p-5 space-y-5 fade-in bg-slate-950 hidden">
+
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-slate-500">Auto-refreshes every 3 s</span>
+          <button onclick="loadStats()" class="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors">Refresh Now</button>
+        </div>
+
+        <!-- Counter grid -->
+        <div class="grid grid-cols-3 gap-3" id="stat-grid">
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-emerald-400" id="st-hits">—</div>
+            <div class="text-xs text-slate-500">Cache Hits</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-red-400" id="st-misses">—</div>
+            <div class="text-xs text-slate-500">Cache Misses</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-purple-400" id="st-hitrate">—</div>
+            <div class="text-xs text-slate-500">Hit Rate</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-purple-300" id="st-pub">—</div>
+            <div class="text-xs text-slate-500">Events Published</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-fuchsia-400" id="st-recv">—</div>
+            <div class="text-xs text-slate-500">Events Received</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-violet-400" id="st-tag">—</div>
+            <div class="text-xs text-slate-500">Tag Invalidations</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center space-y-1">
+            <div class="text-2xl font-black text-red-300" id="st-deleted">—</div>
+            <div class="text-xs text-slate-500">Keys Deleted</div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl col-span-2 p-4 flex items-center justify-between">
+            <div>
+              <div class="text-xs text-slate-400 mb-1">Pub/Sub Listener</div>
+              <div id="st-listener" class="text-sm font-semibold text-slate-300">—</div>
+            </div>
+            <div class="text-right text-xs text-slate-500 space-y-0.5">
+              <div>key channel: <code class="text-purple-300 font-mono">cache:invalidate:ei216</code></div>
+              <div>tag channel: <code class="text-fuchsia-300 font-mono">cache:tags:invalidate:ei216</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hit rate bar -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+          <div class="flex justify-between text-xs text-slate-400">
+            <span>Cache efficiency</span>
+            <span id="hitrate-label">—</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded-full h-2.5">
+            <div id="hitrate-bar" class="h-2.5 rounded-full bg-purple-500 transition-all duration-700" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- Channels reference -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+          <div class="text-xs font-bold text-slate-400 uppercase tracking-wider">Pub/Sub Channel Reference</div>
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="border-b border-slate-700">
+                <th class="text-left py-2 text-slate-400 font-semibold">Channel</th>
+                <th class="text-left py-2 text-slate-400 font-semibold">Purpose</th>
+                <th class="text-left py-2 text-slate-400 font-semibold">Payload fields</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+              <tr>
+                <td class="py-2 font-mono text-purple-300">cache:invalidate:ei216</td>
+                <td class="py-2 text-slate-400">Delete one specific key</td>
+                <td class="py-2 font-mono text-slate-500">key, reason, ts</td>
+              </tr>
+              <tr>
+                <td class="py-2 font-mono text-fuchsia-300">cache:tags:invalidate:ei216</td>
+                <td class="py-2 text-slate-400">Delete all keys for a tag</td>
+                <td class="py-2 font-mono text-slate-500">tag, reason, ts</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge panel -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+      <h2 class="text-sm font-bold text-slate-200">1% Knowledge — Event-Driven vs TTL</h2>
+      <div class="grid grid-cols-2 gap-4 text-xs text-slate-400">
+        <div class="space-y-2">
+          <div class="font-semibold text-purple-300">Why TTL alone is not enough</div>
+          <ul class="space-y-1 list-disc list-inside leading-relaxed">
+            <li>Data updated at T=0 stays stale until TTL fires at T=300 s</li>
+            <li>Under high read traffic, stale data is served thousands of times before expiry</li>
+            <li>Hard to tune: short TTL = frequent DB hits; long TTL = long staleness window</li>
+            <li>Flush-and-redeploy resets ALL TTLs simultaneously (cold start surge)</li>
+          </ul>
+        </div>
+        <div class="space-y-2">
+          <div class="font-semibold text-fuchsia-300">Event-driven advantages</div>
+          <ul class="space-y-1 list-disc list-inside leading-relaxed">
+            <li>Invalidation latency = Redis network latency (~1 ms), not TTL</li>
+            <li>Works across multiple app instances — every subscriber gets the event</li>
+            <li>Tag groups let one event clear a whole resource family (e.g., after a price import)</li>
+            <li>Combine: use TTL as safety net + events for instant precision</li>
+          </ul>
+        </div>
+      </div>
+      <div class="bg-slate-800 rounded-xl p-3 border-l-2 border-purple-500">
+        <div class="text-xs text-slate-300 font-semibold mb-1">Phil Karlton's law — and the solution</div>
+        <div class="text-xs text-slate-400 leading-relaxed">
+          "There are only two hard things in Computer Science: cache invalidation and naming things."
+          Event-driven invalidation doesn't make the <em>logic</em> easier, but it makes the
+          <em>timing</em> exact: the subscriber deletes the key within milliseconds of the write,
+          without relying on the developer remembering to call <code class="text-purple-300 font-mono">redis.delete()</code>
+          in every code path that touches that data.
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+  // ── Utilities ──────────────────────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+
+  function cacheBadge(status) {
+    if (status === 'HIT')
+      return '<span class="badge" style="background:#14532d;color:#4ade80;border:1px solid #166534">HIT</span>';
+    return '<span class="badge" style="background:#450a0a;color:#f87171;border:1px solid #7f1d1d">MISS</span>';
+  }
+
+  function latencyBadge(ms) {
+    const c = ms < 5 ? 'bg-emerald-900 text-emerald-300 border-emerald-700'
+                      : ms < 50 ? 'bg-yellow-900 text-yellow-300 border-yellow-700'
+                                : 'bg-red-900 text-red-300 border-red-700';
+    return `<span class="badge ${c}">${ms.toFixed(2)} ms</span>`;
+  }
+
+  function ts(epoch) {
+    const d = new Date(epoch * 1000);
+    return d.toLocaleTimeString([], {hour12:false}) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+  }
+
+  async function api(method, path, body) {
+    const opts = {method, headers:{'Content-Type':'application/json'}};
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(path, opts);
+    return {ok: r.ok, status: r.status, data: await r.json()};
+  }
+
+  function showResult(elId, data, ok=true) {
+    const el = $(elId);
+    el.classList.remove('hidden');
+    el.className = el.className.replace(/border-\S+/g, '').trim();
+    el.classList.add(ok ? 'border-slate-700' : 'border-red-800');
+    el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  }
+
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  function switchTab(name) {
+    ['demo','invalidate','events','stats'].forEach(t => {
+      $('tab-'+t).classList.toggle('active', t===name);
+      $('pane-'+t).classList.toggle('hidden', t!==name);
+    });
+    if (name === 'stats')  loadStats();
+    if (name === 'events') loadEvents();
+  }
+
+  // ── Demo tab ───────────────────────────────────────────────────────────────
+  async function fetchProduct() {
+    const id = $('sel-product').value;
+    if (!id) { alert('Select a product first'); return; }
+    const {ok, data} = await api('GET', `/api/events/product/${id}`);
+    const el = $('product-result');
+    el.classList.remove('hidden');
+    const s = data.cache_status;
+    el.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        ${cacheBadge(s)} ${latencyBadge(data.latency_ms)}
+        <span class="text-slate-500">source: <span class="${s==='HIT'?'text-emerald-400':'text-red-400'}">${data.source}</span></span>
+      </div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-slate-300">
+        <div><span class="text-slate-500">id:</span> ${data.data.id}</div>
+        <div><span class="text-slate-500">name:</span> ${data.data.name}</div>
+        <div><span class="text-slate-500">price:</span> $${data.data.price}</div>
+        <div><span class="text-slate-500">stock:</span> ${data.data.stock}</div>
+        <div class="col-span-2"><span class="text-slate-500">key:</span> <code class="text-purple-300">${data.cache_key || ''}</code></div>
+      </div>
+      ${data.tags_registered ? `<div class="mt-1 text-slate-500">tags: <code class="text-fuchsia-300">${data.tags_registered.join(', ')}</code></div>` : ''}
+    `;
+    inspectKeys();
+  }
+
+  async function updateProduct() {
+    const id = $('sel-product').value;
+    if (!id) { alert('Select a product first'); return; }
+    const price = $('inp-price').value;
+    const stock = $('inp-stock').value;
+    const body = {};
+    if (price) body.price = parseFloat(price);
+    if (stock) body.stock = parseInt(stock);
+    if (!Object.keys(body).length) { alert('Enter a price or stock to update'); return; }
+    const {ok, data} = await api('PUT', `/api/events/product/${id}`, body);
+    const el = $('update-result');
+    el.classList.remove('hidden');
+    el.className = el.className + (ok ? ' border-orange-800' : ' border-red-800');
+    el.innerHTML = ok
+      ? `<div class="text-orange-400 font-bold mb-1">Invalidation published!</div>` +
+        `<div>Channel: <code class="text-purple-300">${data.invalidation?.channel}</code></div>` +
+        `<div>Key: <code class="text-purple-300">${data.invalidation?.key}</code></div>` +
+        `<div class="text-slate-500 mt-1">Switch to "Live Events" tab to see the listener's response.</div>`
+      : `<div class="text-red-400">${JSON.stringify(data)}</div>`;
+  }
+
+  async function fetchOrder() {
+    const id = $('sel-order').value;
+    if (!id) { alert('Select an order first'); return; }
+    const {ok, data} = await api('GET', `/api/events/order/${id}`);
+    const el = $('order-result');
+    el.classList.remove('hidden');
+    const s = data.cache_status;
+    el.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        ${cacheBadge(s)} ${latencyBadge(data.latency_ms)}
+        <span class="text-slate-500">source: <span class="${s==='HIT'?'text-emerald-400':'text-red-400'}">${data.source}</span></span>
+      </div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-slate-300">
+        <div><span class="text-slate-500">id:</span> ${data.data.id}</div>
+        <div><span class="text-slate-500">status:</span> <span class="text-fuchsia-300">${data.data.status}</span></div>
+        <div><span class="text-slate-500">qty:</span> ${data.data.qty}</div>
+        <div><span class="text-slate-500">user_id:</span> ${data.data.user_id}</div>
+        <div class="col-span-2"><span class="text-slate-500">key:</span> <code class="text-fuchsia-300">${data.cache_key || ''}</code></div>
+      </div>
+      ${data.tags_registered ? `<div class="mt-1 text-slate-500">tags: <code class="text-fuchsia-300">${data.tags_registered.join(', ')}</code></div>` : ''}
+    `;
+    inspectKeys();
+  }
+
+  async function updateOrder() {
+    const id = $('sel-order').value;
+    if (!id) { alert('Select an order first'); return; }
+    const status = $('inp-status').value;
+    if (!status) { alert('Select a status'); return; }
+    const {ok, data} = await api('PUT', `/api/events/order/${id}`, {status});
+    const el = $('order-update-result');
+    el.classList.remove('hidden');
+    el.innerHTML = ok
+      ? `<div class="text-orange-400 font-bold mb-1">Invalidation published!</div>` +
+        `<div>Key: <code class="text-fuchsia-300">${data.invalidation?.key}</code></div>`
+      : `<div class="text-red-400">${JSON.stringify(data)}</div>`;
+  }
+
+  async function inspectKeys() {
+    const {ok, data} = await api('GET', '/api/events/keys/inspect');
+    const listEl = $('keys-list');
+    const tableEl = $('tags-table');
+    if (!ok || !data.keys.length) {
+      listEl.innerHTML = '<span class="text-slate-600 italic">No ei216:* keys in Redis</span>';
+      if (tableEl) tableEl.innerHTML = '<span class="text-slate-600 italic">No tag SETs found</span>';
+      return;
+    }
+    // Cache entries list
+    const entries = data.keys.filter(k => !k.key.includes(':tags:'));
+    const tagSets  = data.keys.filter(k =>  k.key.includes(':tags:'));
+    listEl.innerHTML = entries.map(k => `
+      <div class="flex items-center gap-3 py-1 border-b border-slate-800 last:border-0">
+        <code class="text-purple-300 flex-1">${k.key}</code>
+        <span class="text-slate-500">ttl: <span class="text-yellow-400">${k.ttl}s</span></span>
+        <span class="badge bg-slate-800 text-slate-400 border border-slate-700">${k.type}</span>
+      </div>`).join('') || '<span class="text-slate-600 italic">No plain cache keys</span>';
+
+    // Tags table
+    if (tableEl) {
+      if (!tagSets.length) {
+        tableEl.innerHTML = '<span class="text-slate-600 italic">No tag SETs — fetch products/orders first</span>';
+      } else {
+        tableEl.innerHTML = `
+          <table class="w-full text-xs">
+            <thead><tr class="border-b border-slate-700">
+              <th class="text-left py-2 text-slate-400">Tag SET key</th>
+              <th class="text-left py-2 text-slate-400">Members (cache keys)</th>
+              <th class="text-left py-2 text-slate-400">TTL</th>
+            </tr></thead>
+            <tbody class="divide-y divide-slate-800">
+              ${tagSets.map(ts => `<tr>
+                <td class="py-2 font-mono text-fuchsia-300">${ts.key}</td>
+                <td class="py-2 font-mono text-slate-400">${(ts.members||[]).join('<br>')}</td>
+                <td class="py-2 text-yellow-400">${ts.ttl}s</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>`;
+      }
+    }
+  }
+
+  async function resetAll() {
+    if (!confirm('Flush all ei216:* keys and reset stats?')) return;
+    await api('POST', '/api/events/reset');
+    $('product-result').classList.add('hidden');
+    $('order-result').classList.add('hidden');
+    $('update-result').classList.add('hidden');
+    $('order-update-result').classList.add('hidden');
+    inspectKeys();
+    loadStats();
+  }
+
+  // ── Invalidate tab ─────────────────────────────────────────────────────────
+  async function invalidateKey() {
+    const key    = $('inp-key').value.trim();
+    const reason = $('inp-reason').value.trim() || 'manual';
+    if (!key) { alert('Enter a cache key'); return; }
+    const {ok, data} = await api('POST', '/api/events/invalidate/key', {key, reason});
+    showResult('key-invalidate-result', data, ok);
+  }
+
+  async function invalidateTag(tag) {
+    const {ok, data} = await api('POST', `/api/events/invalidate/tag/${tag}`);
+    showResult('tag-invalidate-result', data, ok);
+    inspectKeys();
+  }
+
+  async function invalidateCustomTag() {
+    const tag = $('inp-tag').value.trim();
+    if (!tag) { alert('Enter a tag name'); return; }
+    await invalidateTag(tag);
+  }
+
+  // ── Events tab ─────────────────────────────────────────────────────────────
+  let _lastEventCount = 0;
+
+  async function loadEvents() {
+    const {ok, data} = await api('GET', '/api/events/pubsub/events');
+    if (!ok) return;
+
+    // Update listener badge
+    const lb = $('listener-badge');
+    lb.className = `text-xs px-2.5 py-1 rounded-full font-mono border ` +
+      (data.listener_active
+        ? 'bg-purple-950 text-purple-300 border-purple-700'
+        : 'bg-red-950 text-red-400 border-red-800');
+    lb.textContent = data.listener_active ? 'listener: active' : 'listener: inactive';
+
+    const events = data.events || [];
+    const container = $('event-log');
+    if (!events.length) {
+      container.innerHTML = '<div class="text-xs text-slate-600 italic text-center py-8">No events yet — update a product or order to trigger invalidation</div>';
+      _lastEventCount = 0;
+      return;
+    }
+
+    if (events.length === _lastEventCount) return;  // no change
+    _lastEventCount = events.length;
+
+    container.innerHTML = events.map(ev => {
+      const isKey = ev.event_type === 'key';
+      const accent = isKey ? 'purple' : 'fuchsia';
+      const channelLabel = isKey ? 'key-invalidation' : 'tag-invalidation';
+      const detail = isKey
+        ? `<code class="text-purple-300">${ev.data?.key || ''}</code>`
+        : `tag: <code class="text-fuchsia-300">${ev.data?.tag || ''}</code>`;
+      const deletedInfo = ev.deleted > 0
+        ? `<span class="text-red-400 ml-2">deleted: ${ev.deleted} key${ev.deleted>1?'s':''}</span>`
+        : ev.deleted === 0 ? `<span class="text-slate-600 ml-2">(key was already gone)</span>` : '';
+      const keysInfo = ev.deleted_keys?.length
+        ? `<div class="text-slate-500 mt-1">Deleted: ${ev.deleted_keys.map(k=>`<code class="text-red-300">${k}</code>`).join(', ')}</div>`
+        : '';
+      return `
+        <div class="event-item bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="badge bg-${accent}-950 text-${accent}-300 border border-${accent}-800">${channelLabel}</span>
+            <span class="text-slate-500 text-xs font-mono">${ts(ev.ts)}</span>
+            ${deletedInfo}
+          </div>
+          <div class="text-xs text-slate-400">${detail}
+            <span class="text-slate-600 ml-2">reason: ${ev.data?.reason || 'n/a'}</span>
+          </div>
+          ${keysInfo}
+        </div>`;
+    }).join('');
+  }
+
+  // ── Stats tab ──────────────────────────────────────────────────────────────
+  async function loadStats() {
+    const {ok, data} = await api('GET', '/api/events/stats');
+    if (!ok) return;
+    const s = data.stats;
+    $('st-hits').textContent    = s.cache_hits;
+    $('st-misses').textContent  = s.cache_misses;
+    $('st-hitrate').textContent = data.hit_rate_pct + '%';
+    $('st-pub').textContent     = s.invalidations_published;
+    $('st-recv').textContent    = s.invalidations_received;
+    $('st-tag').textContent     = s.tag_invalidations;
+    $('st-deleted').textContent = s.keys_deleted;
+    const lb = $('st-listener');
+    lb.textContent  = data.listener_active ? 'Active (subscribed)' : 'Inactive';
+    lb.className    = 'text-sm font-semibold ' + (data.listener_active ? 'text-emerald-400' : 'text-red-400');
+    $('hitrate-bar').style.width   = data.hit_rate_pct + '%';
+    $('hitrate-label').textContent = data.hit_rate_pct + '%';
+  }
+
+  // ── Polling ────────────────────────────────────────────────────────────────
+  setInterval(() => {
+    const activeTab = document.querySelector('.tab-btn.active')?.id?.replace('tab-','');
+    if (activeTab === 'events') loadEvents();
+    if (activeTab === 'stats')  loadStats();
+  }, 2000);
+
+  // Boot
+  inspectKeys();
+  loadStats();
+  </script>
+</body>
+</html>

@@ -158,6 +158,11 @@ def strategy_211():
     return render_template("strategy_211.html")
 
 
+@app.get("/strategy/212")
+def strategy_212():
+    return render_template("strategy_212.html")
+
+
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
 
 
@@ -475,6 +480,81 @@ def stampede_stats():
 @app.route("/api/stampede/reset", methods=["POST"])
 def stampede_reset():
     return _proxy("POST", "/v1/stampede/reset")
+
+
+# ── Thundering Herd (2.12) proxy ──────────────────────────────────────────────
+
+
+@app.get("/api/herd/article/<int:article_id>/plain")
+def herd_article_plain(article_id: int):
+    return _proxy("GET", f"/v1/herd/article/{article_id}/plain")
+
+
+@app.get("/api/herd/article/<int:article_id>/jitter")
+def herd_article_jitter(article_id: int):
+    return _proxy("GET", f"/v1/herd/article/{article_id}/jitter")
+
+
+@app.get("/api/herd/ttls")
+def herd_ttls():
+    return _proxy("GET", "/v1/herd/ttls")
+
+
+@app.route("/api/herd/populate", methods=["POST"])
+def herd_populate():
+    return _proxy("POST", "/v1/herd/populate")
+
+
+@app.route("/api/herd/expire", methods=["POST"])
+def herd_expire():
+    return _proxy("POST", "/v1/herd/expire")
+
+
+@app.route("/api/herd/simulate", methods=["POST"])
+def herd_simulate():
+    count = request.args.get("count", "10")
+    mode = request.args.get("mode", "plain")
+    return _proxy("POST", f"/v1/herd/simulate?count={count}&mode={mode}")
+
+
+@app.get("/api/herd/cb/status")
+def herd_cb_status():
+    return _proxy("GET", "/v1/herd/cb/status")
+
+
+@app.get("/api/herd/cb/fetch")
+def herd_cb_fetch():
+    return _proxy("GET", "/v1/herd/cb/fetch")
+
+
+@app.route("/api/herd/cb/inject-failure", methods=["POST"])
+def herd_cb_inject_failure():
+    return _proxy("POST", "/v1/herd/cb/inject-failure")
+
+
+@app.route("/api/herd/cb/clear-failure", methods=["POST"])
+def herd_cb_clear_failure():
+    return _proxy("POST", "/v1/herd/cb/clear-failure")
+
+
+@app.route("/api/herd/cb/reset", methods=["POST"])
+def herd_cb_reset():
+    return _proxy("POST", "/v1/herd/cb/reset")
+
+
+@app.get("/api/herd/stats")
+def herd_stats():
+    return _proxy("GET", "/v1/herd/stats")
+
+
+@app.route("/api/herd/cache", methods=["DELETE"])
+def herd_clear_cache():
+    return _proxy("DELETE", "/v1/herd/cache")
+
+
+@app.route("/api/herd/reset", methods=["POST"])
+def herd_reset():
+    return _proxy("POST", "/v1/herd/reset")
 
 
 if __name__ == "__main__":

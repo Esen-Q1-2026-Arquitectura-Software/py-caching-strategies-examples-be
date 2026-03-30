@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.12 — Thundering Herd Problem Solutions</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn { transition: all .15s ease; }
+    .tab-btn.active { background: rgb(59 7 100); color: rgb(240 171 252); border-color: rgb(168 85 247); }
+    .tab-btn:not(.active) { color: #94a3b8; border-color: transparent; }
+    .tab-btn:not(.active):hover { color: #e2e8f0; background: rgb(30 41 59); }
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .hit  { background:#052e16; border-color:#16a34a; color:#4ade80; }
+    .miss { background:#450a0a; border-color:#dc2626; color:#f87171; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    table td, table th { padding: .45rem .75rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .72rem; }
+    .pill-closed    { background:#052e16; color:#4ade80; border:1px solid #16a34a; }
+    .pill-open      { background:#450a0a; color:#f87171; border:1px solid #dc2626; }
+    .pill-half_open { background:#422006; color:#fb923c; border:1px solid #ea580c; }
+    .ttl-bar { height:14px; border-radius:3px; transition: width .4s ease; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-500 hover:text-slate-300 text-sm transition-colors">← Back</a>
+        <span class="text-slate-700">|</span>
+        <span class="text-fuchsia-400 font-bold text-sm font-mono">2.12</span>
+        <span class="text-slate-300 font-semibold text-sm">Thundering Herd Problem Solutions</span>
+      </div>
+      <span class="text-xs px-2.5 py-1 rounded-full bg-fuchsia-950 text-fuchsia-300 font-semibold">Jitter + Circuit Breaker</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Intro -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+      <h1 class="text-xl font-bold text-white">Thundering Herd Problem Solutions</h1>
+      <p class="text-slate-400 text-sm leading-relaxed">
+        Unlike a stampede (one key, many requests), the <span class="text-fuchsia-300 font-semibold">thundering herd</span>
+        occurs when <em>many different cache keys</em> expire at the same moment — typically because they were all
+        populated together at deployment or after a full cache flush. Every key expires simultaneously and a wave
+        of requests floods the database all at once.
+      </p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+        <div class="bg-slate-800 rounded-xl p-4">
+          <div class="text-fuchsia-400 font-bold text-xs uppercase tracking-wider mb-2">Solution A — TTL Jitter</div>
+          <pre class="text-fuchsia-300 text-xs leading-relaxed">import random
+
+def jitter_ttl(base: int, pct=0.25) -> int:
+    window = int(base * pct)
+    return base + random.randint(-window, window)
+
+# Each key gets a slightly different TTL
+# → expiry spread over a ±25% window
+# → DB load is naturally distributed</pre>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-4">
+          <div class="text-fuchsia-400 font-bold text-xs uppercase tracking-wider mb-2">Solution B — Circuit Breaker</div>
+          <pre class="text-fuchsia-300 text-xs leading-relaxed">if cb.failures >= threshold:
+    cb.state = OPEN      # stop all requests
+
+if state == OPEN:
+    if elapsed > recovery_s:
+        state = HALF_OPEN  # let one probe through
+    else:
+        return default_data  # shield DB
+
+if probe_succeeds:
+    state = CLOSED  # back to normal</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 border-b border-slate-800 pb-px flex-wrap">
+      <button onclick="showTab('jitter')"  id="tab-jitter"  class="tab-btn active px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">TTL Jitter</button>
+      <button onclick="showTab('cb')"      id="tab-cb"      class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Circuit Breaker</button>
+      <button onclick="showTab('sim')"     id="tab-sim"     class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Burst Simulator</button>
+      <button onclick="showTab('stats')"   id="tab-stats"   class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Stats</button>
+    </div>
+
+    <!-- ── TAB: Jitter ────────────────────────────────────────────────────────── -->
+    <div id="pane-jitter" class="space-y-5 fade-in">
+
+      <!-- Controls -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">TTL Jitter — Key Expiry Spread</h2>
+        <p class="text-slate-400 text-sm">
+          Populate 10 article keys. <span class="text-red-400 font-semibold">Plain</span> mode sets all to
+          TTL=20s — they expire simultaneously. <span class="text-fuchsia-400 font-semibold">Jitter</span>
+          spreads TTL across 15–25s so expirations stagger naturally.
+        </p>
+        <div class="flex flex-wrap gap-3">
+          <button onclick="populate()" class="px-4 py-2 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded-lg text-sm font-semibold transition-colors">
+            Populate 10 Articles
+          </button>
+          <button onclick="refreshTTLs()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-semibold transition-colors">
+            Refresh TTLs
+          </button>
+          <button onclick="forceExpire()" class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-sm font-semibold transition-colors">
+            Force Expire All
+          </button>
+        </div>
+
+        <!-- Populate result -->
+        <div id="populate-result" class="hidden bg-slate-800 rounded-xl p-4 text-xs font-mono"></div>
+
+        <!-- TTL bars -->
+        <div id="ttl-section" class="hidden space-y-4">
+          <div>
+            <div class="text-xs text-red-400 font-semibold uppercase tracking-wider mb-2">Plain TTLs — all identical (20 s)</div>
+            <div id="plain-bars" class="space-y-1.5"></div>
+          </div>
+          <div>
+            <div class="text-xs text-fuchsia-400 font-semibold uppercase tracking-wider mb-2">Jitter TTLs — spread across 15–25 s</div>
+            <div id="jitter-bars" class="space-y-1.5"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fetch individual article -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Fetch Individual Article</h2>
+        <div class="flex gap-3 items-center flex-wrap">
+          <div class="flex items-center gap-2">
+            <label class="text-slate-400 text-sm">Article ID:</label>
+            <input id="article-id" type="number" min="1" max="10" value="1"
+              class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white w-20 focus:outline-none focus:border-fuchsia-500" />
+          </div>
+          <button onclick="fetchArticle('plain')" class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-sm font-semibold transition-colors">
+            Fetch Plain (fixed TTL)
+          </button>
+          <button onclick="fetchArticle('jitter')" class="px-4 py-2 bg-fuchsia-900 hover:bg-fuchsia-800 text-fuchsia-300 rounded-lg text-sm font-semibold transition-colors">
+            Fetch Jitter (spread TTL)
+          </button>
+        </div>
+
+        <div id="article-result" class="hidden space-y-2">
+          <div id="article-badge" class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-bold border"></div>
+          <div class="grid grid-cols-3 gap-3 text-sm">
+            <div class="bg-slate-800 rounded-lg p-3 text-center">
+              <div id="article-source" class="text-white font-bold">—</div>
+              <div class="text-slate-500 text-xs mt-1">Source</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3 text-center">
+              <div id="article-ttl" class="text-white font-bold">—</div>
+              <div class="text-slate-500 text-xs mt-1">TTL (s)</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3 text-center">
+              <div id="article-latency" class="text-white font-bold">—</div>
+              <div class="text-slate-500 text-xs mt-1">Latency (ms)</div>
+            </div>
+          </div>
+          <div id="article-data" class="bg-slate-800 rounded-xl p-3 text-xs font-mono text-slate-300"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Circuit Breaker ───────────────────────────────────────────────── -->
+    <div id="pane-cb" class="space-y-5 fade-in hidden">
+
+      <!-- State display -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <h2 class="text-base font-bold text-slate-200">Circuit Breaker State</h2>
+          <div id="cb-state-pill" class="px-3 py-1 rounded-full text-sm font-bold pill-closed">CLOSED</div>
+        </div>
+
+        <!-- State machine diagram -->
+        <div class="bg-slate-800 rounded-xl p-4 flex items-center justify-center gap-2 text-xs flex-wrap">
+          <div class="text-center">
+            <div id="node-closed" class="w-20 h-10 rounded-lg border-2 flex items-center justify-center font-bold text-emerald-400 border-emerald-600 bg-emerald-950 transition-all duration-300">CLOSED</div>
+            <div class="text-slate-500 mt-1">Normal</div>
+          </div>
+          <div class="text-slate-500 px-1">→ failure ×3 →</div>
+          <div class="text-center">
+            <div id="node-open" class="w-20 h-10 rounded-lg border-2 flex items-center justify-center font-bold text-red-400 border-red-800 bg-red-950 opacity-40 transition-all duration-300">OPEN</div>
+            <div class="text-slate-500 mt-1">Blocking</div>
+          </div>
+          <div class="text-slate-500 px-1">→ 15 s →</div>
+          <div class="text-center">
+            <div id="node-halfopen" class="w-24 h-10 rounded-lg border-2 flex items-center justify-center font-bold text-orange-400 border-orange-800 bg-orange-950 opacity-40 transition-all duration-300">HALF-OPEN</div>
+            <div class="text-slate-500 mt-1">Probing</div>
+          </div>
+          <div class="text-slate-500 px-1">→ success →</div>
+          <div class="text-slate-500 text-xs">back to CLOSED</div>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div class="bg-slate-800 rounded-lg p-3 text-center">
+            <div id="cb-failures" class="text-white font-bold text-lg">0</div>
+            <div class="text-slate-500 text-xs mt-1">Failures (threshold: 3)</div>
+          </div>
+          <div class="bg-slate-800 rounded-lg p-3 text-center">
+            <div id="cb-remaining" class="text-white font-bold text-lg">—</div>
+            <div class="text-slate-500 text-xs mt-1">Recovery remaining (s)</div>
+          </div>
+          <div class="bg-slate-800 rounded-lg p-3 text-center">
+            <div id="cb-allowed" class="text-white font-bold text-lg">0</div>
+            <div class="text-slate-500 text-xs mt-1">Requests allowed</div>
+          </div>
+          <div class="bg-slate-800 rounded-lg p-3 text-center">
+            <div id="cb-blocked" class="text-white font-bold text-lg">0</div>
+            <div class="text-slate-500 text-xs mt-1">Requests blocked</div>
+          </div>
+        </div>
+        <div id="cb-last-error" class="hidden text-xs text-red-400 font-mono bg-red-950 border border-red-800 rounded-lg px-3 py-2"></div>
+        <div id="cb-failure-badge" class="hidden text-xs font-semibold px-3 py-1.5 rounded-lg bg-orange-950 text-orange-400 border border-orange-700">
+          ⚠ DB failure injection ACTIVE — calls to /cb/fetch will fail
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Interactive Demo</h2>
+        <p class="text-slate-400 text-sm">
+          1. Click <strong class="text-white">Inject DB Failure</strong> to start failing calls.<br>
+          2. Click <strong class="text-white">Fetch with CB</strong> three times — watch the breaker trip to OPEN.<br>
+          3. Wait 15 s for HALF-OPEN, then fetch again — success resets to CLOSED.
+        </p>
+        <div class="flex flex-wrap gap-3">
+          <button onclick="cbFetch()" class="px-4 py-2 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded-lg text-sm font-semibold transition-colors">
+            Fetch with CB
+          </button>
+          <button onclick="injectFailure()" class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-sm font-semibold transition-colors">
+            Inject DB Failure
+          </button>
+          <button onclick="clearFailure()" class="px-4 py-2 bg-emerald-900 hover:bg-emerald-800 text-emerald-300 rounded-lg text-sm font-semibold transition-colors">
+            Clear Failure
+          </button>
+          <button onclick="resetCB()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors">
+            Reset CB
+          </button>
+        </div>
+
+        <div id="cb-result" class="hidden space-y-2">
+          <div id="cb-result-badge" class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-bold border"></div>
+          <div class="grid grid-cols-2 gap-3 text-sm">
+            <div class="bg-slate-800 rounded-lg p-3">
+              <div class="text-slate-500 text-xs mb-1">Source</div>
+              <div id="cb-result-source" class="text-white font-mono text-sm">—</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3">
+              <div class="text-slate-500 text-xs mb-1">Latency</div>
+              <div id="cb-result-latency" class="text-white font-mono text-sm">—</div>
+            </div>
+          </div>
+          <div id="cb-result-data" class="bg-slate-800 rounded-xl p-3 text-xs font-mono text-slate-300"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Burst Simulator ───────────────────────────────────────────────── -->
+    <div id="pane-sim" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Burst Simulator</h2>
+        <p class="text-slate-400 text-sm">
+          Clears the cache, then fires N concurrent requests simultaneously — simulating the thundering herd moment
+          right after keys expire. Both modes show N DB calls in the burst itself.
+          The key difference is the <span class="text-fuchsia-300 font-semibold">TTL spread</span> of the freshly
+          populated keys: plain = all expire together again; jitter = staggered expiry window.
+        </p>
+
+        <div class="flex gap-3 items-center flex-wrap">
+          <div class="flex items-center gap-2">
+            <label class="text-slate-400 text-sm">Requests:</label>
+            <input id="sim-count" type="number" min="1" max="20" value="10"
+              class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white w-20 focus:outline-none focus:border-fuchsia-500" />
+          </div>
+          <button onclick="runSim('plain')" class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-sm font-semibold transition-colors">
+            Run — No Jitter
+          </button>
+          <button onclick="runSim('jitter')" class="px-4 py-2 bg-fuchsia-700 hover:bg-fuchsia-600 text-white rounded-lg text-sm font-semibold transition-colors">
+            Run — With Jitter
+          </button>
+        </div>
+
+        <!-- Side-by-side comparison -->
+        <div id="sim-results" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div id="sim-plain-card" class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-3 opacity-40">
+            <div class="text-red-400 font-bold text-sm">No Jitter</div>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div class="bg-slate-900 rounded-lg p-2 text-center">
+                <div id="sim-plain-db" class="text-white font-bold text-lg">—</div>
+                <div class="text-slate-500">DB calls</div>
+              </div>
+              <div class="bg-slate-900 rounded-lg p-2 text-center">
+                <div id="sim-plain-ms" class="text-white font-bold text-lg">—</div>
+                <div class="text-slate-500">Total ms</div>
+              </div>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs mb-1">New TTL spread:</div>
+              <div id="sim-plain-ttls" class="text-red-300 font-mono text-xs">—</div>
+            </div>
+            <div id="sim-plain-note" class="text-slate-400 text-xs leading-relaxed"></div>
+          </div>
+          <div id="sim-jitter-card" class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-3 opacity-40">
+            <div class="text-fuchsia-400 font-bold text-sm">With Jitter</div>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div class="bg-slate-900 rounded-lg p-2 text-center">
+                <div id="sim-jitter-db" class="text-white font-bold text-lg">—</div>
+                <div class="text-slate-500">DB calls</div>
+              </div>
+              <div class="bg-slate-900 rounded-lg p-2 text-center">
+                <div id="sim-jitter-ms" class="text-white font-bold text-lg">—</div>
+                <div class="text-slate-500">Total ms</div>
+              </div>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs mb-1">New TTL spread:</div>
+              <div id="sim-jitter-ttls" class="text-fuchsia-300 font-mono text-xs">—</div>
+            </div>
+            <div id="sim-jitter-note" class="text-slate-400 text-xs leading-relaxed"></div>
+          </div>
+        </div>
+
+        <!-- DB timestamps visualizer -->
+        <div id="sim-timeline" class="hidden">
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-3">DB Call Timeline (concurrent burst)</div>
+          <div id="sim-timeline-plain" class="hidden mb-3">
+            <div class="text-xs text-red-400 mb-1">No Jitter — DB call timestamps (ms since burst start):</div>
+            <div id="sim-ts-plain" class="font-mono text-xs text-slate-300 flex flex-wrap gap-1"></div>
+          </div>
+          <div id="sim-timeline-jitter" class="hidden">
+            <div class="text-xs text-fuchsia-400 mb-1">With Jitter — DB call timestamps (ms since burst start):</div>
+            <div id="sim-ts-jitter" class="font-mono text-xs text-slate-300 flex flex-wrap gap-1"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Stats ─────────────────────────────────────────────────────────── -->
+    <div id="pane-stats" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <h2 class="text-base font-bold text-slate-200">Session Statistics</h2>
+          <div class="flex gap-2">
+            <button onclick="loadStats()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-semibold transition-colors">
+              Refresh
+            </button>
+            <button onclick="resetAll()" class="px-3 py-1.5 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs font-semibold transition-colors">
+              Reset All
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Jitter stats -->
+          <div class="space-y-3">
+            <div class="text-fuchsia-400 font-bold text-sm uppercase tracking-wider">Jitter Demo</div>
+            <table class="w-full text-sm border-collapse">
+              <thead class="bg-slate-800 text-slate-400 text-xs uppercase">
+                <tr><th class="text-left p-2 rounded-tl">Metric</th><th class="text-right p-2">Plain</th><th class="text-right p-2 rounded-tr">Jitter</th></tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800">
+                <tr>
+                  <td class="p-2 text-slate-400">Cache Hits</td>
+                  <td id="st-plain-hits" class="p-2 text-right text-emerald-400 font-mono">0</td>
+                  <td id="st-jitter-hits" class="p-2 text-right text-emerald-400 font-mono">0</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-slate-400">Cache Misses</td>
+                  <td id="st-plain-misses" class="p-2 text-right text-red-400 font-mono">0</td>
+                  <td id="st-jitter-misses" class="p-2 text-right text-red-400 font-mono">0</td>
+                </tr>
+                <tr>
+                  <td class="p-2 text-slate-400">DB Calls</td>
+                  <td id="st-plain-db" class="p-2 text-right text-amber-400 font-mono">0</td>
+                  <td id="st-jitter-db" class="p-2 text-right text-amber-400 font-mono">0</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- CB stats -->
+          <div class="space-y-3">
+            <div class="text-fuchsia-400 font-bold text-sm uppercase tracking-wider">Circuit Breaker</div>
+            <table class="w-full text-sm border-collapse">
+              <thead class="bg-slate-800 text-slate-400 text-xs uppercase">
+                <tr><th class="text-left p-2 rounded-tl">Metric</th><th class="text-right p-2 rounded-tr">Value</th></tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800">
+                <tr><td class="p-2 text-slate-400">Requests Allowed</td><td id="st-cb-allowed" class="p-2 text-right text-emerald-400 font-mono">0</td></tr>
+                <tr><td class="p-2 text-slate-400">Requests Blocked</td><td id="st-cb-blocked" class="p-2 text-right text-red-400 font-mono">0</td></tr>
+                <tr><td class="p-2 text-slate-400">DB Failures</td><td id="st-cb-failures" class="p-2 text-right text-amber-400 font-mono">0</td></tr>
+                <tr><td class="p-2 text-slate-400">Recoveries</td><td id="st-cb-recoveries" class="p-2 text-right text-fuchsia-400 font-mono">0</td></tr>
+                <tr><td class="p-2 text-slate-400">CB State</td><td id="st-cb-state" class="p-2 text-right font-mono">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Key insight -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+        <h2 class="text-base font-bold text-slate-200 mb-3">Key Insights</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div class="bg-fuchsia-950 border border-fuchsia-900 rounded-xl p-4 space-y-2">
+            <div class="text-fuchsia-400 font-bold">TTL Jitter</div>
+            <ul class="text-slate-400 text-xs space-y-1 list-disc list-inside leading-relaxed">
+              <li>Add ±25% random offset when storing each key</li>
+              <li>Prevents synchronized mass expiry</li>
+              <li>Zero-code cost — just wrap your setex call</li>
+              <li>Doesn't help with a single hot key (→ use 2.11 for that)</li>
+            </ul>
+          </div>
+          <div class="bg-fuchsia-950 border border-fuchsia-900 rounded-xl p-4 space-y-2">
+            <div class="text-fuchsia-400 font-bold">Circuit Breaker</div>
+            <ul class="text-slate-400 text-xs space-y-1 list-disc list-inside leading-relaxed">
+              <li>Shields DB during sustained failures</li>
+              <li>Three states: CLOSED → OPEN → HALF-OPEN → CLOSED</li>
+              <li>Prevents cascading failure avalanche</li>
+              <li>Recovery probe tests DB health before re-enabling</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // ── Tab switching ──────────────────────────────────────────────────────────
+    const panes = ['jitter', 'cb', 'sim', 'stats'];
+    function showTab(name) {
+      panes.forEach(p => {
+        document.getElementById('pane-' + p).classList.toggle('hidden', p !== name);
+        document.getElementById('tab-' + p).classList.toggle('active', p === name);
+      });
+      if (name === 'cb')    { loadCBStatus(); }
+      if (name === 'stats') { loadStats(); }
+      if (name === 'jitter') { refreshTTLs(); }
+    }
+
+    // ── Jitter Tab ─────────────────────────────────────────────────────────────
+    async function populate() {
+      const res = await fetch('/api/herd/populate', { method: 'POST' });
+      const d = await res.json();
+      const el = document.getElementById('populate-result');
+      el.classList.remove('hidden');
+      el.innerHTML = `<span class="text-fuchsia-400">Seeded ${d.seeded} articles.</span>
+        Plain TTLs: <span class="text-red-300">${d.plain_ttls.join(', ')} s</span><br>
+        Jitter TTLs: <span class="text-fuchsia-300">${d.jitter_ttls.join(', ')} s</span><br>
+        <span class="text-slate-400">Spread: ${d.ttl_spread_s}s across jitter keys</span>`;
+      await refreshTTLs();
+    }
+
+    async function refreshTTLs() {
+      const res = await fetch('/api/herd/ttls');
+      if (!res.ok) return;
+      const d = await res.json();
+      const MAX = d.base_ttl + Math.ceil(d.base_ttl * 0.25) + 2;
+
+      function renderBars(items, containerId, color) {
+        const el = document.getElementById(containerId);
+        el.innerHTML = items.map(item => {
+          const ttl = item.ttl_s;
+          const pct = ttl < 0 ? 0 : Math.round((ttl / MAX) * 100);
+          const label = ttl < 0 ? 'expired' : ttl + 's';
+          const barColor = ttl < 0 ? 'bg-slate-700' : color;
+          return `<div class="flex items-center gap-2 text-xs">
+            <span class="text-slate-500 w-10 text-right font-mono">id=${item.id}</span>
+            <div class="flex-1 bg-slate-800 rounded" style="height:14px">
+              <div class="${barColor} ttl-bar rounded" style="width:${pct}%"></div>
+            </div>
+            <span class="w-16 font-mono text-right ${ttl < 0 ? 'text-slate-600' : ''}">${label}</span>
+          </div>`;
+        }).join('');
+      }
+
+      const anyPlain = d.plain.some(x => x.ttl_s >= 0);
+      const anyJitter = d.jitter.some(x => x.ttl_s >= 0);
+      if (anyPlain || anyJitter) {
+        document.getElementById('ttl-section').classList.remove('hidden');
+        renderBars(d.plain, 'plain-bars', 'bg-red-500');
+        renderBars(d.jitter, 'jitter-bars', 'bg-fuchsia-500');
+      }
+    }
+
+    async function forceExpire() {
+      const res = await fetch('/api/herd/expire', { method: 'POST' });
+      const d = await res.json();
+      const el = document.getElementById('populate-result');
+      el.classList.remove('hidden');
+      el.innerHTML = `<span class="text-red-400">Expired ${d.deleted_keys} keys. Cache is now cold.</span>`;
+      await refreshTTLs();
+    }
+
+    async function fetchArticle(mode) {
+      const id = document.getElementById('article-id').value || 1;
+      const res = await fetch(`/api/herd/article/${id}/${mode}`);
+      const d = await res.json();
+
+      document.getElementById('article-result').classList.remove('hidden');
+      const isHit = d.source === 'cache';
+      const badge = document.getElementById('article-badge');
+      badge.className = `inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-bold border ${isHit ? 'hit' : 'miss'}`;
+      badge.textContent = isHit ? '● CACHE HIT' : '○ CACHE MISS';
+
+      document.getElementById('article-source').textContent = d.source;
+      document.getElementById('article-ttl').textContent = d.ttl_s !== undefined ? d.ttl_s + 's' : '—';
+      document.getElementById('article-latency').textContent = d.latency_ms + 'ms';
+
+      const copy = { ...d };
+      delete copy.source; delete copy.ttl_s; delete copy.latency_ms;
+      document.getElementById('article-data').textContent = JSON.stringify(copy, null, 2);
+    }
+
+    // ── Circuit Breaker Tab ────────────────────────────────────────────────────
+    function applyCBStatus(d) {
+      const cb = d.circuit_breaker;
+      const state = cb.state;
+      const pill = document.getElementById('cb-state-pill');
+      pill.className = `px-3 py-1 rounded-full text-sm font-bold pill-${state}`;
+      pill.textContent = state.replace('_', '-').toUpperCase();
+
+      document.getElementById('cb-failures').textContent = cb.failures;
+      document.getElementById('cb-remaining').textContent = state === 'open' ? cb.remaining_s + 's' : '—';
+      document.getElementById('cb-allowed').textContent = document.getElementById('st-cb-allowed')?.textContent || '—';
+      document.getElementById('cb-blocked').textContent = document.getElementById('st-cb-blocked')?.textContent || '—';
+
+      const err = document.getElementById('cb-last-error');
+      if (cb.last_error) {
+        err.classList.remove('hidden');
+        err.textContent = 'Last error: ' + cb.last_error;
+      } else {
+        err.classList.add('hidden');
+      }
+
+      const badge = document.getElementById('cb-failure-badge');
+      badge.classList.toggle('hidden', !d.db_failure_injected);
+
+      // Highlight active node
+      ['closed','open','half_open'].forEach(s => {
+        const node = document.getElementById('node-' + s);
+        if (node) node.classList.toggle('opacity-40', s !== state);
+        if (node) node.classList.toggle('ring-2', s === state);
+        if (node) node.classList.toggle('ring-white/20', s === state);
+      });
+    }
+
+    async function loadCBStatus() {
+      const res = await fetch('/api/herd/cb/status');
+      if (!res.ok) return;
+      const d = await res.json();
+      applyCBStatus(d);
+    }
+
+    async function cbFetch() {
+      const res = await fetch('/api/herd/cb/fetch');
+      const d = await res.json();
+      applyCBStatus({ circuit_breaker: d.circuit_breaker, db_failure_injected: false });
+
+      document.getElementById('cb-result').classList.remove('hidden');
+      const badge = document.getElementById('cb-result-badge');
+      const src = d.source;
+      const isCache = src === 'cache';
+      const isOpen = src === 'circuit_open';
+      const isErr = src === 'db_error';
+      badge.className = `inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-bold border ${isCache ? 'hit' : isOpen ? 'border-red-800 bg-red-950 text-red-400' : isErr ? 'border-amber-700 bg-amber-950 text-amber-300' : 'miss'}`;
+      badge.textContent = src === 'cache' ? '● CACHE HIT' : src === 'circuit_open' ? '⚡ CIRCUIT OPEN' : src === 'db_error' ? '✕ DB ERROR' : '○ DB CALL';
+
+      document.getElementById('cb-result-source').textContent = src;
+      document.getElementById('cb-result-latency').textContent = d.latency_ms + ' ms';
+
+      const copy = { ...d };
+      delete copy.circuit_breaker; delete copy.source; delete copy.latency_ms;
+      document.getElementById('cb-result-data').textContent = JSON.stringify(copy, null, 2);
+
+      await loadStats();
+    }
+
+    async function injectFailure() {
+      await fetch('/api/herd/cb/inject-failure', { method: 'POST' });
+      await loadCBStatus();
+      document.getElementById('cb-failure-badge').classList.remove('hidden');
+    }
+
+    async function clearFailure() {
+      await fetch('/api/herd/cb/clear-failure', { method: 'POST' });
+      await loadCBStatus();
+      document.getElementById('cb-failure-badge').classList.add('hidden');
+    }
+
+    async function resetCB() {
+      await fetch('/api/herd/cb/reset', { method: 'POST' });
+      document.getElementById('cb-result').classList.add('hidden');
+      await loadCBStatus();
+      await loadStats();
+    }
+
+    // ── Simulator Tab ──────────────────────────────────────────────────────────
+    async function runSim(mode) {
+      const count = document.getElementById('sim-count').value || 10;
+      const res = await fetch(`/api/herd/simulate?count=${count}&mode=${mode}`, { method: 'POST' });
+      const d = await res.json();
+
+      document.getElementById('sim-results').classList.remove('hidden');
+      document.getElementById('sim-timeline').classList.remove('hidden');
+
+      const isPlain = mode === 'plain';
+      const cardId = isPlain ? 'sim-plain-card' : 'sim-jitter-card';
+      const card = document.getElementById(cardId);
+      card.classList.remove('opacity-40');
+
+      if (isPlain) {
+        document.getElementById('sim-plain-db').textContent = d.db_calls;
+        document.getElementById('sim-plain-ms').textContent = d.total_ms;
+        document.getElementById('sim-plain-ttls').textContent = `All ${d.ttl_min_s}s — spread: ${d.ttl_spread_s}s`;
+        document.getElementById('sim-plain-note').textContent = d.note;
+
+        document.getElementById('sim-timeline-plain').classList.remove('hidden');
+        const tsEl = document.getElementById('sim-ts-plain');
+        tsEl.innerHTML = d.db_call_timestamps_ms.map(t =>
+          `<span class="bg-red-950 border border-red-800 text-red-300 rounded px-1.5 py-0.5">${t}ms</span>`
+        ).join('');
+      } else {
+        document.getElementById('sim-jitter-db').textContent = d.db_calls;
+        document.getElementById('sim-jitter-ms').textContent = d.total_ms;
+        document.getElementById('sim-jitter-ttls').textContent = `${d.ttl_min_s}–${d.ttl_max_s}s — spread: ${d.ttl_spread_s}s`;
+        document.getElementById('sim-jitter-note').textContent = d.note;
+
+        document.getElementById('sim-timeline-jitter').classList.remove('hidden');
+        const tsEl = document.getElementById('sim-ts-jitter');
+        tsEl.innerHTML = d.db_call_timestamps_ms.map(t =>
+          `<span class="bg-fuchsia-950 border border-fuchsia-800 text-fuchsia-300 rounded px-1.5 py-0.5">${t}ms</span>`
+        ).join('');
+      }
+    }
+
+    // ── Stats Tab ──────────────────────────────────────────────────────────────
+    async function loadStats() {
+      const res = await fetch('/api/herd/stats');
+      if (!res.ok) return;
+      const d = await res.json();
+      const j = d.jitter;
+      document.getElementById('st-plain-hits').textContent = j.plain_hits;
+      document.getElementById('st-plain-misses').textContent = j.plain_misses;
+      document.getElementById('st-plain-db').textContent = j.plain_db_calls;
+      document.getElementById('st-jitter-hits').textContent = j.jitter_hits;
+      document.getElementById('st-jitter-misses').textContent = j.jitter_misses;
+      document.getElementById('st-jitter-db').textContent = j.jitter_db_calls;
+
+      const cb = d.circuit_breaker;
+      document.getElementById('st-cb-allowed').textContent = cb.allowed;
+      document.getElementById('st-cb-blocked').textContent = cb.blocked;
+      document.getElementById('st-cb-failures').textContent = cb.failures;
+      document.getElementById('st-cb-recoveries').textContent = cb.recoveries;
+      document.getElementById('st-cb-state').textContent = cb.state.state.replace('_', '-').toUpperCase();
+
+      // Update CB panel counters
+      document.getElementById('cb-allowed').textContent = cb.allowed;
+      document.getElementById('cb-blocked').textContent = cb.blocked;
+    }
+
+    async function resetAll() {
+      await fetch('/api/herd/reset', { method: 'POST' });
+      await loadStats();
+      await loadCBStatus();
+      document.getElementById('cb-result').classList.add('hidden');
+      document.getElementById('populate-result').classList.add('hidden');
+      document.getElementById('sim-results').classList.add('hidden');
+      document.getElementById('sim-timeline').classList.add('hidden');
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────────
+    refreshTTLs();
+  </script>
+</body>
+</html>

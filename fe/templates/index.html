@@ -558,6 +558,51 @@
         </div>
       </a>
 
+      <!-- ── Card 2.12 ─────────────────────────────────────── -->
+      <a href="/strategy/212"
+         class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-fuchsia-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-fuchsia-400 leading-none">2.12</span>
+            <span class="badge bg-fuchsia-950 text-fuchsia-300 mt-1 border border-fuchsia-800">Jitter + CB</span>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-1">Thundering Herd</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">
+            TTL jitter staggers mass key expiry. Circuit breaker shields the DB from cascading failures.
+          </p>
+        </div>
+        <div class="px-6 py-4 space-y-3 border-t border-slate-800">
+          <div class="space-y-2 text-sm text-slate-400">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-fuchsia-500 flex-shrink-0"></span>
+              <span><code class="text-fuchsia-300 font-mono text-xs">TTL ± 25%</code> — spread expiry across a time window</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-fuchsia-500 flex-shrink-0"></span>
+              <span>CLOSED → OPEN → HALF-OPEN → CLOSED breaker</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">±25%</div>
+              <div class="text-slate-500 mt-0.5">TTL jitter</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-slate-300 font-bold">3 fails</div>
+              <div class="text-slate-500 mt-0.5">CB threshold</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg py-2">
+              <div class="text-fuchsia-400 font-bold">15 s</div>
+              <div class="text-slate-500 mt-0.5">recovery</div>
+            </div>
+          </div>
+          <div class="flex items-center text-fuchsia-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
     </section>
 
     <!-- ── How it works ─────────────────────────────────────────────────────── -->

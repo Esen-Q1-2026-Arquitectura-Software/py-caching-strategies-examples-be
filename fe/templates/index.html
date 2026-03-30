@@ -699,6 +699,55 @@
         </div>
       </a>
 
+
+      <!-- ── Card 2.15 ─────────────────────────────────────────────────────── -->
+      <a href="/strategy/215" class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-green-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-green-400 leading-none">2.15</span>
+            <span class="badge bg-green-950 text-green-300 mt-1 border border-green-800">Warm Up</span>
+          </div>
+          <h3 class="text-base font-bold text-white mb-2">Cache Warming Strategies</h3>
+          <p class="text-slate-400 text-xs leading-relaxed mb-3">
+            Prevent cold-start latency after deploys or cache flushes. Pre-populate critical keys before traffic hits, schedule proactive refreshes, and batch-warm with Redis PIPELINE in a single TCP round-trip.
+          </p>
+          <ul class="text-slate-400 text-xs space-y-1 mb-4">
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+              <span>Startup warm: all 22 critical keys pre-loaded before first request</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+              <span><code class="text-emerald-300 font-mono text-xs">PIPELINE</code> bulk warm — 20 SETs in one TCP round-trip</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+              <span>Scheduled asyncio task refreshes keys every 45 s before TTL expires</span>
+            </li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-slate-800 bg-slate-900 flex items-center justify-between">
+          <div class="flex gap-4 text-xs">
+            <div class="text-center">
+              <div class="text-green-400 font-bold">22 keys</div>
+              <div class="text-slate-500 mt-0.5">startup</div>
+            </div>
+            <div class="text-center">
+              <div class="text-emerald-400 font-bold">1 TCP</div>
+              <div class="text-slate-500 mt-0.5">pipeline</div>
+            </div>
+            <div class="text-center">
+              <div class="text-teal-400 font-bold">45 s</div>
+              <div class="text-slate-500 mt-0.5">refresh</div>
+            </div>
+          </div>
+          <div class="flex items-center text-green-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
     </section>
 
     <!-- ── How it works ─────────────────────────────────────────────────────── -->

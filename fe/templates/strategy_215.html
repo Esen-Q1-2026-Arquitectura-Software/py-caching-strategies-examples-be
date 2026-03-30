@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.15 — Cache Warming Strategies</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn { transition: all .15s ease; }
+    .tab-btn.active { background: rgb(15 23 42); color: rgb(74 222 128); border-color: rgb(34 197 94); }
+    .tab-btn:not(.active) { color: #94a3b8; border-color: transparent; }
+    .tab-btn:not(.active):hover { color: #e2e8f0; background: rgb(30 41 59); }
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    table td, table th { padding: .45rem .75rem; }
+    .badge { display:inline-block; font-size:.65rem; font-weight:700; padding:.2rem .55rem; border-radius:9999px; letter-spacing:.04em; text-transform:uppercase; }
+    .bar-fill { height: 10px; border-radius: 3px; transition: width .6s ease; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-500 hover:text-slate-300 text-sm transition-colors">← Back</a>
+        <span class="text-slate-700">|</span>
+        <span class="text-green-400 font-bold text-sm font-mono">2.15</span>
+        <span class="text-slate-300 font-semibold text-sm">Cache Warming Strategies</span>
+      </div>
+      <span class="text-xs px-2.5 py-1 rounded-full bg-green-950 text-green-300 font-semibold border border-green-800">Startup + Pipeline + Scheduler</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Intro -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <h1 class="text-xl font-bold text-white">Cache Warming Strategies</h1>
+      <p class="text-slate-400 text-sm leading-relaxed">
+        A cold cache causes every first request to hit the database — spiking latency right when traffic is highest
+        (after a deploy or cache flush). Three warming strategies prevent this:
+        <span class="text-green-300 font-semibold">Startup Warming</span> pre-populates before serving traffic,
+        <span class="text-emerald-300 font-semibold">Pipeline Bulk Warm</span> batches all Redis SETs into one TCP round-trip,
+        and a <span class="text-teal-300 font-semibold">Scheduled Refresher</span> proactively renews keys before TTL expires.
+      </p>
+
+      <!-- Strategy cards -->
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-slate-800 rounded-xl p-3 border border-green-900">
+          <div class="text-green-400 text-xs font-bold mb-1">01 STARTUP WARM</div>
+          <div class="text-slate-300 text-xs leading-relaxed">Pre-populate critical keys during lifespan startup. First request always hits cache.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 border border-emerald-900">
+          <div class="text-emerald-400 text-xs font-bold mb-1">02 PIPELINE BULK</div>
+          <div class="text-slate-300 text-xs leading-relaxed">Batch all SET commands into one TCP round-trip via Redis PIPELINE — 10–100x faster.</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 border border-teal-900">
+          <div class="text-teal-400 text-xs font-bold mb-1">03 SCHEDULED REFRESH</div>
+          <div class="text-slate-300 text-xs leading-relaxed">asyncio background task refreshes trending + config before TTL expires — zero cold misses.</div>
+        </div>
+      </div>
+
+      <!-- Key metrics row -->
+      <div class="flex gap-4 pt-1">
+        <div class="bg-green-950 border border-green-800 rounded-lg px-3 py-2 text-center">
+          <div class="text-green-400 font-bold text-sm">22 keys</div>
+          <div class="text-slate-500 text-xs mt-0.5">startup warm</div>
+        </div>
+        <div class="bg-emerald-950 border border-emerald-800 rounded-lg px-3 py-2 text-center">
+          <div class="text-emerald-400 font-bold text-sm">1 round-trip</div>
+          <div class="text-slate-500 text-xs mt-0.5">pipeline</div>
+        </div>
+        <div class="bg-teal-950 border border-teal-800 rounded-lg px-3 py-2 text-center">
+          <div class="text-teal-400 font-bold text-sm">45 s</div>
+          <div class="text-slate-500 text-xs mt-0.5">refresh interval</div>
+        </div>
+        <div class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-center">
+          <div class="text-slate-300 font-bold text-sm">50 ms</div>
+          <div class="text-slate-500 text-xs mt-0.5">sim DB latency</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-1 border-b border-slate-800 pb-0">
+      <button onclick="switchTab('warm')"    id="tab-warm"      class="tab-btn active border-b-2 px-4 py-2 text-sm font-semibold">Warm Cache</button>
+      <button onclick="switchTab('products')" id="tab-products"  class="tab-btn border-b-2 px-4 py-2 text-sm font-semibold">Products</button>
+      <button onclick="switchTab('scheduler')" id="tab-scheduler" class="tab-btn border-b-2 px-4 py-2 text-sm font-semibold">Scheduler</button>
+      <button onclick="switchTab('stats')"   id="tab-stats"     class="tab-btn border-b-2 px-4 py-2 text-sm font-semibold">Stats</button>
+    </div>
+
+    <!-- ═══════════════════════════ TAB: WARM ═══════════════════════════════ -->
+    <div id="pane-warm" class="space-y-4 fade-in">
+
+      <!-- Action buttons -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-green-300">Warm the Cache</h2>
+        <p class="text-slate-400 text-xs leading-relaxed">
+          Start with a cold cache (flush), then compare the two warming methods. After warming, load a product and observe the instant HIT.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <!-- Flush -->
+          <div class="bg-slate-800 rounded-xl p-4 space-y-3">
+            <div class="text-red-400 text-xs font-bold uppercase">Step 1 — Cold Cache</div>
+            <p class="text-slate-400 text-xs">Flush all cw215 keys to simulate a cold cache / fresh deploy.</p>
+            <button onclick="flushCache()" class="w-full bg-red-900 hover:bg-red-800 border border-red-700 text-red-300 text-xs font-bold py-2 px-3 rounded-lg transition-colors">
+              Flush Cache
+            </button>
+            <div id="flush-result" class="text-xs text-slate-500 hidden"></div>
+          </div>
+
+          <!-- Startup Warm -->
+          <div class="bg-slate-800 rounded-xl p-4 space-y-3">
+            <div class="text-green-400 text-xs font-bold uppercase">Step 2a — Startup Warm</div>
+            <p class="text-slate-400 text-xs">Pre-populate all 22 critical keys (20 products + config + trending) one by one.</p>
+            <button onclick="triggerStartupWarm()" class="w-full bg-green-900 hover:bg-green-800 border border-green-700 text-green-300 text-xs font-bold py-2 px-3 rounded-lg transition-colors">
+              Run Startup Warm
+            </button>
+            <div id="startup-result" class="text-xs text-slate-500 hidden"></div>
+          </div>
+
+          <!-- Pipeline Warm -->
+          <div class="bg-slate-800 rounded-xl p-4 space-y-3">
+            <div class="text-emerald-400 text-xs font-bold uppercase">Step 2b — Pipeline Warm</div>
+            <p class="text-slate-400 text-xs">Warm all 20 products via a single Redis PIPELINE (one TCP round-trip).</p>
+            <button onclick="triggerPipelineWarm()" class="w-full bg-emerald-900 hover:bg-emerald-800 border border-emerald-700 text-emerald-300 text-xs font-bold py-2 px-3 rounded-lg transition-colors">
+              Run Pipeline Warm
+            </button>
+            <div id="pipeline-result" class="text-xs text-slate-500 hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cache Status -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-bold text-slate-200">Cache Key Status</h2>
+          <button onclick="loadCacheStatus()" class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors font-semibold border border-slate-700">
+            Refresh
+          </button>
+        </div>
+        <div id="cache-status-wrap">
+          <div class="text-slate-500 text-xs italic">Click Refresh to load cache status…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════ TAB: PRODUCTS ════════════════════════════ -->
+    <div id="pane-products" class="space-y-4 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Product Lookup</h2>
+        <p class="text-slate-400 text-xs leading-relaxed">
+          Fetch product 1–20. First call hits the DB (~50 ms). Warm the cache first (Warm Cache tab), then every call is an instant HIT.
+        </p>
+
+        <div class="flex gap-3 flex-wrap items-end">
+          <div>
+            <label class="text-slate-400 text-xs mb-1 block">Product ID (1–20)</label>
+            <input id="product-id-input" type="number" min="1" max="99" value="1"
+              class="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white w-32 focus:outline-none focus:border-green-500" />
+          </div>
+          <button onclick="fetchProduct()" class="bg-green-900 hover:bg-green-800 border border-green-700 text-green-200 text-sm font-bold py-2 px-5 rounded-lg transition-colors">
+            Fetch Product
+          </button>
+        </div>
+
+        <!-- Quick ID buttons -->
+        <div class="flex flex-wrap gap-2">
+          <span class="text-slate-500 text-xs self-center">Quick:</span>
+          <script>
+            for(let i = 1; i <= 20; i++) {
+              document.write(`<button onclick="quickProduct(${i})" class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-green-900 text-slate-300 hover:text-green-300 border border-slate-700 transition-colors">${i}</button>`);
+            }
+          </script>
+        </div>
+
+        <div id="product-result" class="hidden space-y-2"></div>
+      </div>
+
+      <!-- Latency History -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-slate-200">Request History</h2>
+          <button onclick="clearHistory()" class="text-xs text-slate-500 hover:text-slate-300 transition-colors">Clear</button>
+        </div>
+        <div id="history-list" class="space-y-1 max-h-64 overflow-y-auto">
+          <div class="text-slate-500 text-xs italic">No requests yet.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════ TAB: SCHEDULER ═══════════════════════════ -->
+    <div id="pane-scheduler" class="space-y-4 fade-in hidden">
+
+      <!-- Scheduler control -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Scheduled Proactive Refresh</h2>
+        <p class="text-slate-400 text-xs leading-relaxed">
+          An <code class="text-teal-300 font-mono">asyncio.create_task</code> background loop wakes every
+          <strong class="text-white">45 seconds</strong> and refreshes <code class="text-green-300 font-mono">cw215:trending</code>
+          (TTL 60 s) and <code class="text-green-300 font-mono">cw215:config</code> (TTL 600 s) before they expire.
+          Once running, <strong class="text-white">no user ever triggers a cold miss</strong> for these keys.
+        </p>
+
+        <!-- Status indicator -->
+        <div id="scheduler-status-card" class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-sm font-bold text-slate-200">Scheduler Status</span>
+            <div id="scheduler-dot" class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+              <span id="scheduler-status-text" class="text-xs text-slate-400 font-semibold">UNKNOWN</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-3 text-center">
+            <div>
+              <div id="sched-interval" class="text-green-400 font-bold text-lg">45 s</div>
+              <div class="text-slate-500 text-xs mt-0.5">interval</div>
+            </div>
+            <div>
+              <div id="sched-refresh-count" class="text-green-400 font-bold text-lg">0</div>
+              <div class="text-slate-500 text-xs mt-0.5">refreshes run</div>
+            </div>
+            <div>
+              <div id="sched-next-in" class="text-teal-400 font-bold text-lg">—</div>
+              <div class="text-slate-500 text-xs mt-0.5">next in (s)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3">
+          <button onclick="startScheduler()" class="flex-1 bg-teal-900 hover:bg-teal-800 border border-teal-700 text-teal-300 text-sm font-bold py-2.5 px-5 rounded-lg transition-colors">
+            Start Scheduler
+          </button>
+          <button onclick="stopScheduler()" class="flex-1 bg-slate-800 hover:bg-red-900 border border-slate-700 hover:border-red-700 text-slate-400 hover:text-red-300 text-sm font-bold py-2.5 px-5 rounded-lg transition-colors">
+            Stop Scheduler
+          </button>
+          <button onclick="pollScheduler()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 text-sm font-bold py-2.5 px-4 rounded-lg transition-colors">
+            Poll
+          </button>
+        </div>
+
+        <div id="scheduler-msg" class="text-xs text-slate-500 hidden"></div>
+      </div>
+
+      <!-- What's being refreshed -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <h2 class="text-sm font-bold text-slate-200">Verify: Keys stay fresh</h2>
+        <p class="text-slate-400 text-xs">Start the scheduler, wait ~45 s, then fetch trending/config — they will always be a HIT because the scheduler refreshed them proactively.</p>
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="fetchTrending()" class="bg-slate-800 hover:bg-teal-900 border border-slate-700 hover:border-teal-700 text-slate-300 hover:text-teal-300 text-sm font-bold py-2.5 rounded-lg transition-colors">
+            Fetch Trending
+          </button>
+          <button onclick="fetchConfig()" class="bg-slate-800 hover:bg-green-900 border border-slate-700 hover:border-green-700 text-slate-300 hover:text-green-300 text-sm font-bold py-2.5 rounded-lg transition-colors">
+            Fetch Config
+          </button>
+        </div>
+        <div id="sched-key-result" class="hidden text-xs"></div>
+      </div>
+
+      <!-- Warm Event Log -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <h2 class="text-sm font-bold text-slate-200">Warm Event Log</h2>
+        <div id="warm-log" class="space-y-1.5 max-h-64 overflow-y-auto">
+          <div class="text-slate-500 text-xs italic">No events yet. Start the scheduler or run a warm operation.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════ TAB: STATS ═══════════════════════════════ -->
+    <div id="pane-stats" class="space-y-4 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-bold text-slate-200">Metrics Dashboard</h2>
+          <div class="flex gap-2">
+            <button onclick="loadStats()" class="text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors font-semibold border border-slate-700">Refresh</button>
+            <button onclick="resetStats()" class="text-xs px-3 py-1.5 bg-red-950 hover:bg-red-900 rounded-lg text-red-400 transition-colors font-semibold border border-red-800">Reset</button>
+          </div>
+        </div>
+
+        <!-- Hit Rate Bar -->
+        <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-400 font-semibold">Cache Hit Rate</span>
+            <span id="stat-hit-rate" class="text-green-400 font-bold text-sm">—</span>
+          </div>
+          <div class="bg-slate-700 rounded-full overflow-hidden h-2.5">
+            <div id="hit-rate-bar" class="bar-fill bg-green-500" style="width:0%"></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="bg-green-950 border border-green-900 rounded-xl p-3 text-center">
+            <div id="stat-hits" class="text-green-400 font-bold text-2xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">Cache Hits</div>
+          </div>
+          <div class="bg-red-950 border border-red-900 rounded-xl p-3 text-center">
+            <div id="stat-misses" class="text-red-400 font-bold text-2xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">Cache Misses</div>
+          </div>
+          <div class="bg-amber-950 border border-amber-900 rounded-xl p-3 text-center">
+            <div id="stat-db" class="text-amber-400 font-bold text-2xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">DB Hits</div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+            <div id="stat-sched-runs" class="text-teal-400 font-bold text-2xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">Sched. Refreshes</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-3">
+          <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+            <div id="stat-startup-keys" class="text-green-300 font-bold text-xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">Startup Warm Keys</div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+            <div id="stat-pipeline-keys" class="text-emerald-300 font-bold text-xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">Pipeline Keys</div>
+          </div>
+          <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 text-center">
+            <div id="stat-pipeline-cmds" class="text-slate-300 font-bold text-xl">0</div>
+            <div class="text-slate-500 text-xs mt-1">Pipeline Commands</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Warm Event Log in Stats tab -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <h2 class="text-sm font-bold text-slate-200">Event Log (last 20)</h2>
+        <div id="stats-log" class="space-y-1.5 max-h-72 overflow-y-auto text-xs">
+          <div class="text-slate-500 italic">No events yet.</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // ── Tab switching ──────────────────────────────────────────────────────────
+    const TABS = ['warm', 'products', 'scheduler', 'stats'];
+    function switchTab(name) {
+      TABS.forEach(t => {
+        document.getElementById('pane-' + t).classList.toggle('hidden', t !== name);
+        document.getElementById('tab-' + t).classList.toggle('active', t === name);
+      });
+      if (name === 'stats') loadStats();
+      if (name === 'scheduler') pollScheduler();
+    }
+
+    // ── History array ───────────────────────────────────────────────────────────
+    const history = [];
+
+    // ── Cache flush ─────────────────────────────────────────────────────────────
+    async function flushCache() {
+      const el = document.getElementById('flush-result');
+      el.textContent = 'Flushing...';
+      el.className = 'text-xs text-slate-400';
+      el.classList.remove('hidden');
+      try {
+        const r = await fetch('/api/warming/cache/flush', { method: 'DELETE' });
+        const d = await r.json();
+        el.textContent = `Flushed ${d.deleted} keys — cache is now COLD.`;
+        el.className = 'text-xs text-red-400 font-semibold';
+        loadCacheStatus();
+      } catch(e) { el.textContent = 'Error: ' + e; el.className = 'text-xs text-red-400'; }
+    }
+
+    // ── Startup warm ─────────────────────────────────────────────────────────────
+    async function triggerStartupWarm() {
+      const el = document.getElementById('startup-result');
+      el.textContent = 'Warming...';
+      el.className = 'text-xs text-slate-400';
+      el.classList.remove('hidden');
+      try {
+        const r = await fetch('/api/warming/warm/startup', { method: 'POST' });
+        const d = await r.json();
+        el.innerHTML = `<span class="text-green-400 font-bold">Done!</span> ${d.keys_written} keys in <span class="text-white font-bold">${d.elapsed_ms} ms</span>`;
+        el.classList.remove('hidden');
+        loadCacheStatus();
+      } catch(e) { el.textContent = 'Error: ' + e; el.className = 'text-xs text-red-400'; }
+    }
+
+    // ── Pipeline warm ────────────────────────────────────────────────────────────
+    async function triggerPipelineWarm() {
+      const el = document.getElementById('pipeline-result');
+      el.textContent = 'Warming via pipeline...';
+      el.className = 'text-xs text-slate-400';
+      el.classList.remove('hidden');
+      try {
+        const r = await fetch('/api/warming/warm/pipeline', { method: 'POST' });
+        const d = await r.json();
+        el.innerHTML = `<span class="text-emerald-400 font-bold">Done!</span> ${d.commands_batched} SETs in <span class="text-white font-bold">${d.elapsed_ms} ms</span> (1 round-trip)`;
+        el.classList.remove('hidden');
+        loadCacheStatus();
+      } catch(e) { el.textContent = 'Error: ' + e; el.className = 'text-xs text-red-400'; }
+    }
+
+    // ── Cache status table ────────────────────────────────────────────────────────
+    async function loadCacheStatus() {
+      const wrap = document.getElementById('cache-status-wrap');
+      wrap.innerHTML = '<div class="text-slate-500 text-xs">Loading...</div>';
+      try {
+        const r = await fetch('/api/warming/cache/status');
+        const d = await r.json();
+        if (d.keys.length === 0) {
+          wrap.innerHTML = '<div class="text-red-400 text-xs font-semibold">Cache is COLD — no cw215 keys found.</div>';
+          return;
+        }
+        const rows = d.keys.map(k => {
+          const shortKey = k.key.replace('cw215:', '');
+          const ttlClass = k.ttl_s < 30 ? 'text-red-400' : k.ttl_s < 120 ? 'text-amber-400' : 'text-green-400';
+          return `<tr class="border-t border-slate-800">
+            <td class="font-mono text-green-300 text-xs">${escHtml(shortKey)}</td>
+            <td class="${ttlClass} font-bold text-xs">${k.ttl_s} s</td>
+            <td class="text-slate-400 text-xs">${k.size_bytes} bytes</td>
+          </tr>`;
+        }).join('');
+        wrap.innerHTML = `
+          <div class="text-xs text-slate-500 mb-2">${d.total_keys} keys in namespace <code class="text-green-300">cw215</code></div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead><tr class="text-slate-500">
+                <th class="pb-2">Key</th><th class="pb-2">TTL</th><th class="pb-2">Size</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+      } catch(e) { wrap.innerHTML = `<div class="text-red-400 text-xs">Error: ${e}</div>`; }
+    }
+
+    // ── Product fetch ─────────────────────────────────────────────────────────────
+    function quickProduct(id) {
+      document.getElementById('product-id-input').value = id;
+      fetchProduct();
+      if (document.getElementById('pane-products').classList.contains('hidden')) {
+        switchTab('products');
+      }
+    }
+
+    async function fetchProduct() {
+      const pid = parseInt(document.getElementById('product-id-input').value);
+      const el = document.getElementById('product-result');
+      el.classList.remove('hidden');
+      el.innerHTML = '<div class="text-slate-500 text-xs">Fetching...</div>';
+      try {
+        const t0 = performance.now();
+        const r = await fetch(`/api/warming/product/${pid}`);
+        const clientMs = (performance.now() - t0).toFixed(1);
+        const d = await r.json();
+
+        const isHit = d.cache_result === 'HIT';
+        const hitBadge = isHit
+          ? '<span class="badge bg-green-950 text-green-300 border border-green-700">HIT</span>'
+          : '<span class="badge bg-red-950 text-red-300 border border-red-700">MISS</span>';
+        const srcColor = isHit ? 'text-green-400' : 'text-amber-400';
+
+        el.innerHTML = `
+          <div class="bg-slate-800 border ${isHit ? 'border-green-900' : 'border-amber-900'} rounded-xl p-4 space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-slate-200 font-semibold text-sm">${d.product ? escHtml(d.product.name) : 'Not Found'}</span>
+              <div class="flex gap-2">${hitBadge}</div>
+            </div>
+            ${d.product ? `
+            <div class="grid grid-cols-4 gap-2 text-xs">
+              <div><div class="text-slate-500">Category</div><div class="text-slate-200">${escHtml(d.product.category)}</div></div>
+              <div><div class="text-slate-500">Price</div><div class="text-green-300 font-bold">$${d.product.price}</div></div>
+              <div><div class="text-slate-500">Stock</div><div class="text-slate-200">${d.product.stock}</div></div>
+              <div><div class="text-slate-500">Rating</div><div class="text-amber-300">${d.product.rating}/5</div></div>
+            </div>` : `<div class="text-red-400 text-xs">${d.error || 'Product not found'}</div>`}
+            <div class="flex gap-4 text-xs pt-1 border-t border-slate-700">
+              <span>Source: <span class="${srcColor} font-semibold">${d.source.toUpperCase()}</span></span>
+              <span>BE latency: <span class="text-white font-semibold">${d.elapsed_ms} ms</span></span>
+              <span>Total: <span class="text-slate-400">${clientMs} ms</span></span>
+            </div>
+          </div>`;
+
+        // Add to history
+        addHistory(pid, d.cache_result, d.source, d.elapsed_ms);
+      } catch(e) { el.innerHTML = `<div class="text-red-400 text-xs">Error: ${e}</div>`; }
+    }
+
+    function addHistory(pid, result, source, ms) {
+      history.unshift({ pid, result, source, ms });
+      if (history.length > 30) history.pop();
+      renderHistory();
+    }
+
+    function renderHistory() {
+      const el = document.getElementById('history-list');
+      if (!history.length) { el.innerHTML = '<div class="text-slate-500 text-xs italic">No requests yet.</div>'; return; }
+      el.innerHTML = history.map(h => {
+        const isHit = h.result === 'HIT';
+        const badge = isHit
+          ? '<span class="badge bg-green-950 text-green-400 border border-green-800 text-xs">HIT</span>'
+          : '<span class="badge bg-red-950 text-red-400 border border-red-800 text-xs">MISS</span>';
+        return `<div class="flex items-center gap-3 py-1 border-b border-slate-800 last:border-0 text-xs">
+          ${badge}
+          <span class="text-slate-300 font-mono w-20">product/${h.pid}</span>
+          <span class="${isHit ? 'text-green-400' : 'text-amber-400'} font-semibold">${h.source}</span>
+          <span class="text-slate-400 ml-auto">${h.ms} ms</span>
+        </div>`;
+      }).join('');
+    }
+
+    function clearHistory() {
+      history.length = 0;
+      renderHistory();
+    }
+
+    // ── Scheduler controls ────────────────────────────────────────────────────────
+    async function startScheduler() {
+      const msg = document.getElementById('scheduler-msg');
+      msg.classList.remove('hidden');
+      msg.className = 'text-xs text-teal-400';
+      msg.textContent = 'Starting scheduler...';
+      try {
+        const r = await fetch('/api/warming/scheduler/start', { method: 'POST' });
+        const d = await r.json();
+        msg.textContent = d.message || `Scheduler ${d.status}.`;
+        msg.className = 'text-xs text-teal-300 font-semibold';
+        pollScheduler();
+      } catch(e) { msg.textContent = 'Error: ' + e; msg.className = 'text-xs text-red-400'; }
+    }
+
+    async function stopScheduler() {
+      const msg = document.getElementById('scheduler-msg');
+      msg.classList.remove('hidden');
+      try {
+        const r = await fetch('/api/warming/scheduler/stop', { method: 'POST' });
+        const d = await r.json();
+        msg.textContent = 'Scheduler stopped.';
+        msg.className = 'text-xs text-slate-400';
+        pollScheduler();
+      } catch(e) { msg.textContent = 'Error: ' + e; msg.className = 'text-xs text-red-400'; }
+    }
+
+    async function pollScheduler() {
+      try {
+        const r = await fetch('/api/warming/scheduler/status');
+        const d = await r.json();
+        const dot = document.getElementById('scheduler-dot');
+        const statusText = document.getElementById('scheduler-status-text');
+        if (d.running) {
+          dot.innerHTML = '<span class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse"></span>';
+          statusText.textContent = 'RUNNING';
+          statusText.className = 'text-xs text-green-400 font-bold';
+        } else {
+          dot.innerHTML = '<span class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>';
+          statusText.textContent = 'STOPPED';
+          statusText.className = 'text-xs text-slate-400 font-semibold';
+        }
+        document.getElementById('sched-refresh-count').textContent = d.refresh_count;
+        document.getElementById('sched-next-in').textContent = d.next_refresh_in_s !== null ? d.next_refresh_in_s + ' s' : '—';
+        if (d.warm_log) renderWarmLog(d.warm_log);
+      } catch(e) {}
+    }
+
+    function renderWarmLog(log) {
+      const el = document.getElementById('warm-log');
+      if (!log.length) { el.innerHTML = '<div class="text-slate-500 text-xs italic">No events yet.</div>'; return; }
+      const typeColor = { startup:'text-green-400', pipeline:'text-emerald-400', scheduled:'text-teal-400', scheduler_start:'text-blue-400', scheduler_stop:'text-slate-400', flush:'text-red-400', error:'text-red-500' };
+      el.innerHTML = [...log].reverse().map(ev => `
+        <div class="flex items-start gap-2 py-1 border-b border-slate-800 last:border-0">
+          <span class="text-slate-600 font-mono text-xs w-16 shrink-0">${ev.time_str}</span>
+          <span class="${typeColor[ev.type] || 'text-slate-400'} font-semibold text-xs uppercase w-20 shrink-0">${ev.type}</span>
+          <span class="text-slate-300 text-xs">${escHtml(ev.detail)}</span>
+        </div>`).join('');
+    }
+
+    // ── Trending / Config fetch (Scheduler tab) ────────────────────────────────
+    async function fetchTrending() {
+      const el = document.getElementById('sched-key-result');
+      el.classList.remove('hidden');
+      try {
+        const r = await fetch('/api/warming/trending');
+        const d = await r.json();
+        const isHit = d.cache_result === 'HIT';
+        el.innerHTML = `<div class="bg-slate-800 border ${isHit ? 'border-teal-800' : 'border-amber-800'} rounded-lg p-3">
+          <span class="font-bold ${isHit ? 'text-teal-300' : 'text-amber-300'}">${d.cache_result}</span>
+          — trending from <strong class="text-white">${d.source}</strong>
+          (${d.products ? d.products.length : 0} items, TTL ${d.ttl_remaining_s} s remaining, ${d.elapsed_ms} ms)
+        </div>`;
+      } catch(e) { el.innerHTML = `<div class="text-red-400">Error: ${e}</div>`; }
+    }
+
+    async function fetchConfig() {
+      const el = document.getElementById('sched-key-result');
+      el.classList.remove('hidden');
+      try {
+        const r = await fetch('/api/warming/config');
+        const d = await r.json();
+        const isHit = d.cache_result === 'HIT';
+        el.innerHTML = `<div class="bg-slate-800 border ${isHit ? 'border-green-800' : 'border-amber-800'} rounded-lg p-3">
+          <span class="font-bold ${isHit ? 'text-green-300' : 'text-amber-300'}">${d.cache_result}</span>
+          — config from <strong class="text-white">${d.source}</strong>
+          (TTL ${d.ttl_remaining_s} s remaining, ${d.elapsed_ms} ms)
+          ${d.config ? `<span class="ml-2 text-slate-400">v${escHtml(String(d.config.version))}</span>` : ''}
+        </div>`;
+      } catch(e) { el.innerHTML = `<div class="text-red-400">Error: ${e}</div>`; }
+    }
+
+    // ── Stats ──────────────────────────────────────────────────────────────────
+    async function loadStats() {
+      try {
+        const r = await fetch('/api/warming/stats');
+        const d = await r.json();
+        document.getElementById('stat-hits').textContent = d.cache_hits;
+        document.getElementById('stat-misses').textContent = d.cache_misses;
+        document.getElementById('stat-db').textContent = d.db_hits;
+        document.getElementById('stat-sched-runs').textContent = d.scheduled_refresh_runs;
+        document.getElementById('stat-startup-keys').textContent = d.startup_warm_keys;
+        document.getElementById('stat-pipeline-keys').textContent = d.pipeline_warm_keys;
+        document.getElementById('stat-pipeline-cmds').textContent = d.pipeline_commands_sent;
+
+        const hr = d.hit_rate_pct || 0;
+        document.getElementById('stat-hit-rate').textContent = hr + '%';
+        document.getElementById('hit-rate-bar').style.width = hr + '%';
+
+        if (d.warm_log) {
+          const logEl = document.getElementById('stats-log');
+          if (!d.warm_log.length) { logEl.innerHTML = '<div class="text-slate-500 italic">No events yet.</div>'; }
+          else {
+            const typeColor = { startup:'text-green-400', pipeline:'text-emerald-400', scheduled:'text-teal-400', scheduler_start:'text-blue-400', scheduler_stop:'text-slate-400', flush:'text-red-400', error:'text-red-500' };
+            logEl.innerHTML = [...d.warm_log].reverse().map(ev => `
+              <div class="flex items-start gap-2 py-1 border-b border-slate-800 last:border-0">
+                <span class="text-slate-600 font-mono w-16 shrink-0">${ev.time_str}</span>
+                <span class="${typeColor[ev.type] || 'text-slate-400'} font-semibold uppercase w-20 shrink-0">${ev.type}</span>
+                <span class="text-slate-300">${escHtml(ev.detail)}</span>
+              </div>`).join('');
+          }
+        }
+      } catch(e) {}
+    }
+
+    async function resetStats() {
+      if (!confirm('Reset all stats and flush the cache?')) return;
+      try {
+        await fetch('/api/warming/stats/reset', { method: 'POST' });
+        loadStats();
+        loadCacheStatus();
+      } catch(e) {}
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // ── Auto-poll scheduler status when on scheduler tab ──────────────────────
+    let _schedPollTimer = null;
+    const origSwitch = window.switchTab;
+    window.switchTab = function(name) {
+      if (_schedPollTimer) { clearInterval(_schedPollTimer); _schedPollTimer = null; }
+      switchTab(name);
+      if (name === 'scheduler') {
+        _schedPollTimer = setInterval(pollScheduler, 3000);
+      }
+    };
+
+    // Initial status load
+    pollScheduler();
+    loadCacheStatus();
+  </script>
+</body>
+</html>

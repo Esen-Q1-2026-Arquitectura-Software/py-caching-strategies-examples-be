@@ -687,5 +687,73 @@ def negative_reset():
     return _proxy("POST", "/v1/negative/reset")
 
 
+# ── Cache Warming Strategies (2.15) page + proxy ───────────────────────────
+
+
+@app.get("/strategy/215")
+def strategy_215():
+    return render_template("strategy_215.html")
+
+
+@app.get("/api/warming/product/<int:product_id>")
+def warming_get_product(product_id: int):
+    return _proxy("GET", f"/v1/warming/product/{product_id}")
+
+
+@app.get("/api/warming/trending")
+def warming_trending():
+    return _proxy("GET", "/v1/warming/trending")
+
+
+@app.get("/api/warming/config")
+def warming_config():
+    return _proxy("GET", "/v1/warming/config")
+
+
+@app.route("/api/warming/warm/startup", methods=["POST"])
+def warming_startup():
+    return _proxy("POST", "/v1/warming/warm/startup")
+
+
+@app.route("/api/warming/warm/pipeline", methods=["POST"])
+def warming_pipeline():
+    return _proxy("POST", "/v1/warming/warm/pipeline")
+
+
+@app.route("/api/warming/scheduler/start", methods=["POST"])
+def warming_scheduler_start():
+    return _proxy("POST", "/v1/warming/scheduler/start")
+
+
+@app.route("/api/warming/scheduler/stop", methods=["POST"])
+def warming_scheduler_stop():
+    return _proxy("POST", "/v1/warming/scheduler/stop")
+
+
+@app.get("/api/warming/scheduler/status")
+def warming_scheduler_status():
+    return _proxy("GET", "/v1/warming/scheduler/status")
+
+
+@app.get("/api/warming/cache/status")
+def warming_cache_status():
+    return _proxy("GET", "/v1/warming/cache/status")
+
+
+@app.route("/api/warming/cache/flush", methods=["DELETE"])
+def warming_cache_flush():
+    return _proxy("DELETE", "/v1/warming/cache/flush")
+
+
+@app.get("/api/warming/stats")
+def warming_stats():
+    return _proxy("GET", "/v1/warming/stats")
+
+
+@app.route("/api/warming/stats/reset", methods=["POST"])
+def warming_stats_reset():
+    return _proxy("POST", "/v1/warming/stats/reset")
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

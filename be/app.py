@@ -37,12 +37,13 @@ from routers import (
     s212_thundering_herd,
     s213_two_level_cache,
     s214_negative_caching,
+    s215_cache_warming,
 )
 
 app = FastAPI(
     title="Caching Showcase API",
-    description="FastAPI backend demonstrating 2.1-2.14 caching strategies",
-    version="2.14.0",
+    description="FastAPI backend demonstrating 2.1-2.15 caching strategies",
+    version="2.15.0",
     lifespan=lifespan,
 )
 
@@ -73,6 +74,7 @@ app.include_router(s211_stampede.router)
 app.include_router(s212_thundering_herd.router)
 app.include_router(s213_two_level_cache.router)
 app.include_router(s214_negative_caching.router)
+app.include_router(s215_cache_warming.router)
 
 
 @app.get("/")
@@ -94,6 +96,8 @@ async def root():
             "2.11 Cache Stampede Prevention (Mutex Lock)",
             "2.12 Thundering Herd Problem Solutions (Jitter + Circuit Breaker)",
             "2.13 Two-Level Cache (L1 in-process TTLCache + L2 Redis)",
+            "2.14 Negative Caching & Bloom Filters (Sentinel + BF.*)",
+            "2.15 Cache Warming Strategies (Startup + Scheduled + Pipeline)",
         ],
     }
 

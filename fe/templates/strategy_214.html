@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.14 — Negative Caching & Bloom Filters</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn { transition: all .15s ease; }
+    .tab-btn.active { background: rgb(15 23 42); color: rgb(244 114 182); border-color: rgb(236 72 153); }
+    .tab-btn:not(.active) { color: #94a3b8; border-color: transparent; }
+    .tab-btn:not(.active):hover { color: #e2e8f0; background: rgb(30 41 59); }
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    table td, table th { padding: .45rem .75rem; }
+    .badge { display:inline-block; font-size:.65rem; font-weight:700; padding:.2rem .55rem; border-radius:9999px; letter-spacing:.04em; text-transform:uppercase; }
+    .bar-fill { height: 10px; border-radius: 3px; transition: width .5s ease; }
+    .source-bloom  { background:#0c0a1e; border-color:#7c3aed; color:#c4b5fd; }
+    .source-neg    { background:#1c0a2e; border-color:#ec4899; color:#f9a8d4; }
+    .source-pos    { background:#052e16; border-color:#16a34a; color:#86efac; }
+    .source-dbhit  { background:#1c1003; border-color:#f59e0b; color:#fcd34d; }
+    .source-dbmiss { background:#1c0a0a; border-color:#dc2626; color:#fca5a5; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-500 hover:text-slate-300 text-sm transition-colors">← Back</a>
+        <span class="text-slate-700">|</span>
+        <span class="text-pink-400 font-bold text-sm font-mono">2.14</span>
+        <span class="text-slate-300 font-semibold text-sm">Negative Caching &amp; Bloom Filters</span>
+      </div>
+      <span class="text-xs px-2.5 py-1 rounded-full bg-pink-950 text-pink-300 font-semibold border border-pink-800">Sentinel + BF.*</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Intro -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <h1 class="text-xl font-bold text-white">Negative Caching &amp; Bloom Filters</h1>
+      <p class="text-slate-400 text-sm leading-relaxed">
+        Classic DDoS vector: flood your API with non-existent IDs — each request misses the cache and hits the DB.
+        Two layered defences prevent this: a <span class="text-pink-300 font-semibold">Negative Cache</span> stores
+        "this ID doesn't exist" in Redis, and a <span class="text-violet-300 font-semibold">Bloom Filter</span>
+        intercepts requests <em>before</em> even hitting Redis, using ~1.2 MB to represent 1 million IDs.
+      </p>
+
+      <!-- Flow diagram -->
+      <div class="bg-slate-800 rounded-xl p-4">
+        <div class="text-xs text-slate-500 mb-3 font-semibold uppercase tracking-wider">Protected lookup flow</div>
+        <div class="flex flex-wrap items-center gap-2 text-xs font-mono">
+          <div class="px-3 py-2 rounded-lg bg-violet-950 border border-violet-700 text-violet-300">BF.EXISTS?</div>
+          <div class="text-slate-600">→</div>
+          <div class="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-400">No → NOT_FOUND<br><span class="text-slate-600 font-sans text-xs">(zero DB hit)</span></div>
+          <div class="text-slate-600">→</div>
+          <div class="px-3 py-2 rounded-lg bg-pink-950 border border-pink-700 text-pink-300">Neg cache?</div>
+          <div class="text-slate-600">→</div>
+          <div class="px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-400">Sentinel → NOT_FOUND<br><span class="text-slate-600 font-sans text-xs">(no DB hit)</span></div>
+          <div class="text-slate-600">→</div>
+          <div class="px-3 py-2 rounded-lg bg-emerald-950 border border-emerald-700 text-emerald-300">Pos cache?</div>
+          <div class="text-slate-600">→</div>
+          <div class="px-3 py-2 rounded-lg bg-amber-950 border border-amber-700 text-amber-300">DB (last resort)</div>
+        </div>
+      </div>
+
+      <!-- Code snippet -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div class="bg-slate-800 rounded-xl p-4">
+          <div class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">Negative cache sentinel</div>
+          <pre class="text-pink-300 text-xs leading-relaxed">SENTINEL = "__NOT_FOUND__"
+
+async def get_user(id):
+    cached = await redis.get(key)
+    if cached == SENTINEL:
+        return None       # known miss
+    if cached:
+        return loads(cached)  # hit
+    user = await db.fetch(id)
+    if user is None:
+        redis.setex(key, 30, SENTINEL)  # cache miss!
+    else:
+        redis.setex(key, 120, dumps(user))
+    return user</pre>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-4">
+          <div class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">Bloom filter check</div>
+          <pre class="text-violet-300 text-xs leading-relaxed">async def might_exist(id) -> bool:
+    return await redis.execute_command(
+        "BF.EXISTS", "users:bloom", str(id)
+    )
+    # False = definitely absent
+    # True  = maybe present (~1% FP)
+
+# On lookup:
+if not await might_exist(user_id):
+    return None  # skip Redis + DB entirely
+
+# On creation:
+await redis.execute_command(
+    "BF.ADD", "users:bloom", str(user_id)
+)</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 border-b border-slate-800 pb-px flex-wrap">
+      <button onclick="showTab('attack')"   id="tab-attack"   class="tab-btn active px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Attack Simulator</button>
+      <button onclick="showTab('bloom')"    id="tab-bloom"    class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Bloom Filter</button>
+      <button onclick="showTab('lookup')"   id="tab-lookup"   class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Cache Explorer</button>
+      <button onclick="showTab('stats')"    id="tab-stats"    class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Stats</button>
+    </div>
+
+    <!-- ── TAB: Attack Simulator ──────────────────────────────────────────────── -->
+    <div id="pane-attack" class="space-y-5 fade-in">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Attack Simulator</h2>
+        <p class="text-slate-400 text-sm leading-relaxed">
+          Simulate a burst of requests for <strong class="text-white">non-existent user IDs</strong>
+          (IDs 1000–1999). Observe how many DB calls are made <em>without</em> protection versus
+          how the Bloom filter blocks them all at zero cost.
+          Remember to <strong class="text-pink-400">initialise the Bloom filter first</strong> (Bloom Filter tab → Init).
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Without protection -->
+          <div class="bg-slate-800 border border-red-900 rounded-xl p-4 space-y-3">
+            <div class="text-red-400 font-bold text-xs uppercase tracking-wider">Without Protection (bare)</div>
+            <p class="text-slate-400 text-xs">Direct DB lookup on every request. No caching, no filtering.</p>
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-xs">Requests:</label>
+              <input id="bare-count" type="number" value="20" min="1" max="100" class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white w-20 focus:outline-none focus:border-red-500" />
+              <button onclick="runBareAttack()" class="px-3 py-1.5 bg-red-900 hover:bg-red-800 text-red-300 border border-red-700 rounded-lg text-xs font-semibold transition-colors">
+                Run Bare
+              </button>
+            </div>
+            <div id="bare-result" class="hidden text-xs font-mono space-y-1">
+              <div class="flex gap-4">
+                <span class="text-slate-500">Requests: <span id="bare-req" class="text-white">0</span></span>
+                <span class="text-slate-500">DB calls: <span id="bare-db" class="text-red-400 font-bold">0</span></span>
+              </div>
+              <div class="text-slate-500">Total time: <span id="bare-time" class="text-white">0</span> ms</div>
+            </div>
+          </div>
+
+          <!-- With protection -->
+          <div class="bg-slate-800 border border-violet-900 rounded-xl p-4 space-y-3">
+            <div class="text-violet-400 font-bold text-xs uppercase tracking-wider">With Protection (Bloom + neg cache)</div>
+            <p class="text-slate-400 text-xs">Bloom filter blocks all unknown IDs before Redis or DB is touched.</p>
+            <div class="flex items-center gap-3">
+              <label class="text-slate-400 text-xs">Requests:</label>
+              <input id="prot-count" type="number" value="20" min="1" max="100" class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white w-20 focus:outline-none focus:border-violet-500" />
+              <button onclick="runProtectedAttack()" class="px-3 py-1.5 bg-violet-900 hover:bg-violet-800 text-violet-300 border border-violet-700 rounded-lg text-xs font-semibold transition-colors">
+                Run Protected
+              </button>
+            </div>
+            <div id="prot-result" class="hidden text-xs font-mono space-y-1">
+              <div class="flex gap-4">
+                <span class="text-slate-500">Requests: <span id="prot-req" class="text-white">0</span></span>
+                <span class="text-slate-500">DB calls: <span id="prot-db" class="text-emerald-400 font-bold">0</span></span>
+              </div>
+              <div class="text-slate-500">Bloom blocked: <span id="prot-bloom" class="text-violet-400 font-bold">0</span></div>
+              <div class="text-slate-500">Total time: <span id="prot-time" class="text-white">0</span> ms</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Comparison bar -->
+        <div id="comparison" class="hidden bg-slate-800 rounded-xl p-4 space-y-3">
+          <div class="text-pink-400 font-bold text-xs uppercase tracking-wider">DB Calls Comparison</div>
+          <div class="space-y-2">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="text-slate-400 w-28">Without (bare)</span>
+              <div class="flex-1 bg-slate-700 rounded" style="height:12px">
+                <div id="cmp-bare-bar" class="bg-red-500 bar-fill rounded" style="width:100%"></div>
+              </div>
+              <span id="cmp-bare-label" class="text-red-400 font-mono w-12 text-right">0</span>
+            </div>
+            <div class="flex items-center gap-2 text-xs">
+              <span class="text-slate-400 w-28">With protection</span>
+              <div class="flex-1 bg-slate-700 rounded" style="height:12px">
+                <div id="cmp-prot-bar" class="bg-violet-500 bar-fill rounded" style="width:0%"></div>
+              </div>
+              <span id="cmp-prot-label" class="text-violet-400 font-mono w-12 text-right">0</span>
+            </div>
+          </div>
+          <div id="cmp-summary" class="text-xs text-emerald-400 font-mono"></div>
+        </div>
+
+        <!-- Second-wave demo (negative cache) -->
+        <div class="border-t border-slate-800 pt-4 space-y-3">
+          <div class="text-slate-300 font-semibold text-sm">Second-wave demo (negative cache)</div>
+          <p class="text-slate-400 text-xs">
+            Look up a non-existing ID once (caches NOT_FOUND sentinel), then look it up again.
+            The second call never reaches the DB — the negative cache sentinel serves it instantly.
+          </p>
+          <div class="flex gap-3 items-center flex-wrap">
+            <input id="neg-id" type="number" value="500" placeholder="Non-existent user ID"
+              class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white w-40 focus:outline-none focus:border-pink-500" />
+            <button onclick="negCacheDemo()" class="px-4 py-2 bg-pink-900 hover:bg-pink-800 text-pink-300 border border-pink-700 rounded-lg text-sm font-semibold transition-colors">
+              Run 2 lookups
+            </button>
+          </div>
+          <div id="neg-demo-result" class="hidden space-y-2 text-xs font-mono"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Bloom Filter ───────────────────────────────────────────────────── -->
+    <div id="pane-bloom" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <h2 class="text-base font-bold text-slate-200">Bloom Filter</h2>
+          <div class="flex gap-2">
+            <button onclick="loadBloomInfo()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-semibold transition-colors">Refresh Info</button>
+            <button onclick="initBloom()" class="px-3 py-1.5 bg-violet-900 hover:bg-violet-800 text-violet-300 border border-violet-700 rounded-lg text-xs font-semibold transition-colors">Init / Rebuild</button>
+          </div>
+        </div>
+
+        <!-- Bloom stats -->
+        <div id="bloom-info-box" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div class="bg-slate-800 rounded-xl p-3 text-center">
+            <div id="bf-items" class="text-violet-400 font-bold text-lg font-mono">—</div>
+            <div class="text-slate-500 text-xs mt-1">Items inserted</div>
+          </div>
+          <div class="bg-slate-800 rounded-xl p-3 text-center">
+            <div id="bf-capacity" class="text-slate-300 font-bold text-lg font-mono">—</div>
+            <div class="text-slate-500 text-xs mt-1">Capacity</div>
+          </div>
+          <div class="bg-slate-800 rounded-xl p-3 text-center">
+            <div id="bf-size" class="text-pink-400 font-bold text-lg font-mono">—</div>
+            <div class="text-slate-500 text-xs mt-1">Size (KB)</div>
+          </div>
+          <div class="bg-slate-800 rounded-xl p-3 text-center">
+            <div id="bf-pct" class="text-amber-400 font-bold text-lg font-mono">—</div>
+            <div class="text-slate-500 text-xs mt-1">% full</div>
+          </div>
+        </div>
+        <div id="bloom-not-init" class="hidden text-yellow-400 text-sm bg-yellow-950 border border-yellow-800 rounded-lg p-3">
+          Bloom filter not initialised. Click <strong>Init / Rebuild</strong> to create it seeded with all 30 existing users.
+        </div>
+
+        <!-- Occupancy bar -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-500">Occupancy</span>
+            <span id="bf-occ-label" class="text-violet-400 font-mono">0%</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded" style="height:10px">
+            <div id="bf-occ-bar" class="bg-violet-500 bar-fill rounded" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- Check an ID -->
+        <div class="border-t border-slate-800 pt-4 space-y-3">
+          <div class="text-slate-300 font-semibold text-sm">Check an ID</div>
+          <p class="text-slate-400 text-xs">
+            IDs 1–30 exist in the DB and were seeded into the BF. IDs > 30 (or &lt; 1) don't exist.
+            Try checking IDs just outside the range to observe false positives.
+          </p>
+          <div class="flex gap-3 items-center flex-wrap">
+            <input id="bloom-check-id" type="number" value="15" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white w-32 focus:outline-none focus:border-violet-500" />
+            <button onclick="checkBloom()" class="px-4 py-2 bg-violet-800 hover:bg-violet-700 text-white rounded-lg text-sm font-semibold transition-colors">Check BF</button>
+          </div>
+          <div id="bloom-check-result" class="hidden rounded-xl border p-4 text-sm font-mono space-y-1"></div>
+        </div>
+
+        <!-- False positive explainer -->
+        <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+          <div class="text-violet-400 font-bold text-xs uppercase tracking-wider">How Bloom Filters work</div>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            A Bloom filter uses <strong class="text-white">k independent hash functions</strong> to set k bits in a bit array.
+            To check: hash the element, check all k bits. If any bit is 0 → definitely absent.
+            If all k bits are 1 → probably present (but might be false positive).
+            <br/><br/>
+            The Redis <code class="text-violet-300">BF.RESERVE</code> command lets you specify
+            <em>capacity</em> (expected items) and <em>error rate</em>.
+            At 1% FP rate, 1 million items ≈ 1.2 MB. At 0.1% FP rate ≈ 1.8 MB.
+            This is orders of magnitude less than storing the IDs themselves.
+          </p>
+          <pre class="text-violet-300 text-xs leading-relaxed bg-slate-900 rounded p-3">BF.RESERVE users:bloom 0.01 1000000
+# error_rate=1%, capacity=1M → ~1.2 MB
+
+BF.ADD    users:bloom "42"    # insert
+BF.EXISTS users:bloom "42"    # → 1 (might exist)
+BF.EXISTS users:bloom "99999" # → 0 (definitely absent)</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Cache Explorer ─────────────────────────────────────────────────── -->
+    <div id="pane-lookup" class="space-y-5 fade-in hidden">
+
+      <!-- Single lookup -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Single Lookup</h2>
+        <p class="text-slate-400 text-sm">
+          Users 1–30 exist. Any other ID triggers a DB miss → negative cache sentinel.
+          Watch the <span class="font-mono text-pink-400">source</span> field change as you repeat lookups.
+        </p>
+        <div class="flex gap-3 items-center flex-wrap">
+          <input id="lookup-id" type="number" value="5" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white w-32 focus:outline-none focus:border-pink-500" />
+          <button onclick="lookupUser()" class="px-4 py-2 bg-pink-800 hover:bg-pink-700 text-white rounded-lg text-sm font-semibold transition-colors">Lookup (protected)</button>
+          <button onclick="lookupUserBare()" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm font-semibold transition-colors">Lookup (bare DB)</button>
+        </div>
+        <div id="lookup-result" class="hidden rounded-xl border p-4 text-sm font-mono space-y-2"></div>
+      </div>
+
+      <!-- Create / Delete users -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Create &amp; Delete Users</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          <!-- Create -->
+          <div class="space-y-3">
+            <div class="text-emerald-400 font-bold text-xs uppercase tracking-wider">Create User</div>
+            <input id="new-name" type="text" placeholder="Name" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+            <input id="new-email" type="text" placeholder="email@example.com" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+            <button onclick="createUser()" class="px-4 py-2 bg-emerald-800 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold w-full transition-colors">Create</button>
+            <div id="create-result" class="hidden text-xs font-mono text-emerald-400 bg-slate-800 rounded-lg p-3"></div>
+          </div>
+
+          <!-- Delete -->
+          <div class="space-y-3">
+            <div class="text-red-400 font-bold text-xs uppercase tracking-wider">Delete User</div>
+            <p class="text-slate-400 text-xs">Deleting a user immediately sets the negative-cache sentinel. Follow-up lookups skip the DB.</p>
+            <input id="del-id" type="number" placeholder="User ID" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+            <button onclick="deleteUser()" class="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-300 border border-red-700 rounded-lg text-sm font-semibold w-full transition-colors">Delete</button>
+            <div class="text-slate-500 text-xs flex gap-1 items-start">
+              <span class="text-amber-400">Note:</span>
+              <span>Bloom filter is NOT updated on delete (BF has no remove). The negative cache handles reachability.</span>
+            </div>
+            <div id="delete-result" class="hidden text-xs font-mono text-red-400 bg-slate-800 rounded-lg p-3"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cache eviction -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <h2 class="text-base font-bold text-slate-200">Cache Controls</h2>
+        <div class="flex flex-wrap gap-2">
+          <div class="flex gap-2 items-center">
+            <input id="evict-id" type="number" placeholder="User ID" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white w-28 focus:outline-none focus:border-pink-500" />
+            <button onclick="evictCache()" class="px-3 py-1.5 bg-pink-950 hover:bg-pink-900 text-pink-400 border border-pink-800 rounded-lg text-xs font-semibold transition-colors">Evict single</button>
+          </div>
+          <button onclick="flushCache()" class="px-3 py-1.5 bg-red-950 hover:bg-red-900 text-red-400 border border-red-800 rounded-lg text-xs font-semibold transition-colors">Flush all cache</button>
+        </div>
+        <div id="cache-ctrl-msg" class="hidden text-xs font-mono text-slate-400 bg-slate-800 rounded-lg px-3 py-2"></div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Stats ──────────────────────────────────────────────────────────── -->
+    <div id="pane-stats" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <h2 class="text-base font-bold text-slate-200">Session Statistics</h2>
+          <div class="flex gap-2">
+            <button onclick="loadStats()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-semibold">Refresh</button>
+            <button onclick="resetAll()" class="px-3 py-1.5 bg-red-950 hover:bg-red-900 text-red-400 border border-red-800 rounded-lg text-xs font-semibold">Reset All</button>
+          </div>
+        </div>
+
+        <!-- Counters grid -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div class="bg-violet-950/50 border border-violet-800 rounded-xl p-3 text-center">
+            <div id="st-bloom" class="text-violet-400 font-bold text-2xl font-mono">0</div>
+            <div class="text-slate-500 text-xs mt-1">Bloom blocks</div>
+          </div>
+          <div class="bg-pink-950/50 border border-pink-800 rounded-xl p-3 text-center">
+            <div id="st-neg" class="text-pink-400 font-bold text-2xl font-mono">0</div>
+            <div class="text-slate-500 text-xs mt-1">Neg cache hits</div>
+          </div>
+          <div class="bg-emerald-950/50 border border-emerald-800 rounded-xl p-3 text-center">
+            <div id="st-pos" class="text-emerald-400 font-bold text-2xl font-mono">0</div>
+            <div class="text-slate-500 text-xs mt-1">Pos cache hits</div>
+          </div>
+          <div class="bg-amber-950/50 border border-amber-800 rounded-xl p-3 text-center">
+            <div id="st-db" class="text-amber-400 font-bold text-2xl font-mono">0</div>
+            <div class="text-slate-500 text-xs mt-1">DB queries</div>
+          </div>
+        </div>
+
+        <!-- DB save rate bar -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-500">DB save rate</span>
+            <span id="st-save-rate" class="text-emerald-400 font-mono">0%</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded" style="height:12px">
+            <div id="st-save-bar" class="bg-emerald-500 bar-fill rounded" style="width:0%"></div>
+          </div>
+          <div class="text-xs text-slate-500">Percentage of lookups that did NOT hit the DB</div>
+        </div>
+
+        <!-- Layer breakdown bars -->
+        <div id="st-breakdown" class="space-y-2"></div>
+
+        <!-- Cache occupancy -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-slate-800 rounded-xl p-3">
+            <div class="text-emerald-400 font-bold text-xs uppercase tracking-wider mb-2">Positive cache</div>
+            <div id="st-pos-keys" class="text-white font-bold text-xl font-mono">0</div>
+            <div class="text-slate-500 text-xs">cached user objects (TTL 120 s)</div>
+          </div>
+          <div class="bg-slate-800 rounded-xl p-3">
+            <div class="text-pink-400 font-bold text-xs uppercase tracking-wider mb-2">Negative cache</div>
+            <div id="st-neg-keys" class="text-white font-bold text-xl font-mono">0</div>
+            <div class="text-slate-500 text-xs">NOT_FOUND sentinels (TTL 30 s)</div>
+          </div>
+        </div>
+
+        <!-- 1% Knowledge -->
+        <div class="bg-slate-800 rounded-xl p-4">
+          <div class="text-pink-400 font-bold text-xs uppercase tracking-wider mb-2">1% Knowledge</div>
+          <div class="space-y-2 text-xs text-slate-400 leading-relaxed">
+            <p>
+              <strong class="text-white">Bloom filter cannot delete.</strong> When a user is deleted, the BF still
+              says "maybe exists." The negative cache sentinel handles this: it returns NOT_FOUND
+              within 30 s, without hitting the DB.
+            </p>
+            <p>
+              <strong class="text-white">False positives are benign here.</strong> A false positive means a non-existent
+              ID passes the BF check — then a Redis lookup returns the negative sentinel (or a DB miss which populates it).
+              Maximum cost: one Redis GET. Still far cheaper than a full DB query.
+            </p>
+            <p>
+              <strong class="text-white">Layer the defences.</strong> BF → negative cache → positive cache → DB.
+              Each layer is orders of magnitude cheaper than the next. Even a 1% BF false-positive rate
+              means 99% of non-existent IDs never reach Redis.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // ── Tab switching ─────────────────────────────────────────────────────────
+    const panes = ['attack', 'bloom', 'lookup', 'stats'];
+    function showTab(name) {
+      panes.forEach(p => {
+        document.getElementById('pane-' + p).classList.toggle('hidden', p !== name);
+        document.getElementById('tab-' + p).classList.toggle('active', p === name);
+      });
+      if (name === 'bloom') loadBloomInfo();
+      if (name === 'stats') loadStats();
+    }
+
+    // ── Source badge helpers ──────────────────────────────────────────────────
+    function sourceBadge(source) {
+      const map = {
+        BLOOM_BLOCK: ['source-bloom', 'BF Block — definitely absent'],
+        NEG_CACHE:   ['source-neg',   'Neg Cache — sentinel hit'],
+        POS_CACHE:   ['source-pos',   'Pos Cache — object cached'],
+        DB_HIT:      ['source-dbhit', 'DB HIT — found, cached'],
+        DB_MISS:     ['source-dbmiss','DB MISS — not found, sentinel cached'],
+        DB_BARE:     ['source-dbmiss','DB (bare) — no cache'],
+      };
+      const [cls, label] = map[source] || ['source-dbmiss', source];
+      return `<span class="px-2.5 py-1 rounded-full border text-xs font-bold ${cls}">${label}</span>`;
+    }
+
+    function resultCard(d, extra = '') {
+      return `<div class="border rounded-xl p-3 space-y-1.5 ${d.found ? 'border-emerald-900 bg-emerald-950/20' : 'border-slate-700 bg-slate-800'}">
+        <div class="flex flex-wrap gap-2 items-center">${sourceBadge(d.source)}
+          <span class="text-slate-500 text-xs">Latency: <span class="text-white font-mono">${d.latency_ms} ms</span></span>
+          ${d.cache_ttl_s ? `<span class="text-slate-500 text-xs">TTL: <span class="text-pink-400 font-mono">${d.cache_ttl_s}s</span></span>` : ''}
+        </div>
+        ${d.found ? `<div class="text-slate-300 text-xs">${JSON.stringify(d.user)}</div>` : '<div class="text-slate-500 text-xs italic">User not found.</div>'}
+        ${extra}
+      </div>`;
+    }
+
+    // ── Attack Simulator ──────────────────────────────────────────────────────
+    async function runBareAttack() {
+      const count = parseInt(document.getElementById('bare-count').value) || 20;
+      const baseId = 1000;
+      const t0 = Date.now();
+      let dbCalls = 0;
+
+      const promises = Array.from({ length: count }, (_, i) =>
+        fetch(`/api/negative/user/${baseId + i}/bare`)
+          .then(r => r.json())
+          .then(d => { if (d.source === 'DB_BARE') dbCalls++; })
+      );
+      await Promise.all(promises);
+      const elapsed = Date.now() - t0;
+
+      document.getElementById('bare-result').classList.remove('hidden');
+      document.getElementById('bare-req').textContent = count;
+      document.getElementById('bare-db').textContent = dbCalls;
+      document.getElementById('bare-time').textContent = elapsed;
+      updateComparison();
+    }
+
+    async function runProtectedAttack() {
+      const count = parseInt(document.getElementById('prot-count').value) || 20;
+      const baseId = 1000;
+      const t0 = Date.now();
+      let dbCalls = 0, bloomBlocks = 0;
+
+      const promises = Array.from({ length: count }, (_, i) =>
+        fetch(`/api/negative/user/${baseId + i}`)
+          .then(r => r.json())
+          .then(d => {
+            if (d.source === 'DB_MISS' || d.source === 'DB_HIT') dbCalls++;
+            if (d.source === 'BLOOM_BLOCK') bloomBlocks++;
+          })
+      );
+      await Promise.all(promises);
+      const elapsed = Date.now() - t0;
+
+      document.getElementById('prot-result').classList.remove('hidden');
+      document.getElementById('prot-req').textContent = count;
+      document.getElementById('prot-db').textContent = dbCalls;
+      document.getElementById('prot-bloom').textContent = bloomBlocks;
+      document.getElementById('prot-time').textContent = elapsed;
+      updateComparison();
+    }
+
+    function updateComparison() {
+      const bareDb = parseInt(document.getElementById('bare-db')?.textContent) || 0;
+      const protDb = parseInt(document.getElementById('prot-db')?.textContent) || 0;
+      if (!document.getElementById('bare-result').classList.contains('hidden') &&
+          !document.getElementById('prot-result').classList.contains('hidden')) {
+        document.getElementById('comparison').classList.remove('hidden');
+        const maxDb = Math.max(bareDb, protDb, 1);
+        document.getElementById('cmp-bare-bar').style.width = (bareDb / maxDb * 100) + '%';
+        document.getElementById('cmp-prot-bar').style.width = (protDb / maxDb * 100) + '%';
+        document.getElementById('cmp-bare-label').textContent = bareDb;
+        document.getElementById('cmp-prot-label').textContent = protDb;
+        const saved = bareDb - protDb;
+        document.getElementById('cmp-summary').textContent =
+          `Protection saved ${saved} DB queries (${bareDb > 0 ? Math.round(saved/bareDb*100) : 0}% reduction).`;
+      }
+    }
+
+    async function negCacheDemo() {
+      const id = document.getElementById('neg-id').value;
+      const box = document.getElementById('neg-demo-result');
+      box.classList.remove('hidden');
+      box.innerHTML = '<div class="text-slate-500 italic">Running...</div>';
+
+      const r1 = await fetch(`/api/negative/user/${id}`).then(r => r.json());
+      const r2 = await fetch(`/api/negative/user/${id}`).then(r => r.json());
+
+      box.innerHTML = `
+        <div class="text-slate-500 text-xs mb-1">Call 1 — first encounter:</div>
+        ${resultCard(r1)}
+        <div class="text-slate-500 text-xs mt-2 mb-1">Call 2 — immediately after (same ID):</div>
+        ${resultCard(r2)}
+        <div class="text-xs text-pink-400 mt-1">
+          ${r1.source.includes('DB') && r2.source === 'NEG_CACHE'
+            ? 'Call 1 hit DB and cached the sentinel. Call 2 served from negative cache — zero DB hit.'
+            : `Sources: ${r1.source} → ${r2.source}`}
+        </div>`;
+    }
+
+    // ── Bloom Filter Tab ──────────────────────────────────────────────────────
+    async function loadBloomInfo() {
+      const res = await fetch('/api/negative/bloom/info');
+      const d = await res.json();
+      if (!d.exists) {
+        document.getElementById('bloom-not-init').classList.remove('hidden');
+        document.getElementById('bloom-info-box').classList.add('opacity-30');
+        return;
+      }
+      document.getElementById('bloom-not-init').classList.add('hidden');
+      document.getElementById('bloom-info-box').classList.remove('opacity-30');
+      document.getElementById('bf-items').textContent    = d.items_inserted?.toLocaleString() ?? '—';
+      document.getElementById('bf-capacity').textContent = d.capacity?.toLocaleString() ?? '—';
+      document.getElementById('bf-size').textContent     = d.size_kb ?? '—';
+      document.getElementById('bf-pct').textContent      = d.pct_full + '%';
+      const pct = Math.min(d.pct_full, 100);
+      document.getElementById('bf-occ-bar').style.width  = pct + '%';
+      document.getElementById('bf-occ-label').textContent = d.pct_full + '%';
+    }
+
+    async function initBloom() {
+      const res = await fetch('/api/negative/bloom/init', { method: 'POST' });
+      const d = await res.json();
+      await loadBloomInfo();
+      document.getElementById('bloom-check-result').classList.add('hidden');
+      alert(`Bloom filter initialised! Seeded ${d.seeded_ids} IDs. ${d.note}`);
+    }
+
+    async function checkBloom() {
+      const id = document.getElementById('bloom-check-id').value;
+      const res = await fetch(`/api/negative/bloom/check/${id}`);
+      const d = await res.json();
+      const box = document.getElementById('bloom-check-result');
+      box.classList.remove('hidden');
+
+      const verdictColors = {
+        true_negative:  'border-emerald-700 bg-emerald-950/30 text-emerald-400',
+        false_positive: 'border-yellow-700  bg-yellow-950/30  text-yellow-400',
+        true_positive:  'border-violet-700  bg-violet-950/30  text-violet-400',
+        false_negative: 'border-red-700     bg-red-950/30     text-red-400',
+      };
+      const cls = verdictColors[d.verdict] || 'border-slate-700';
+      box.className = `rounded-xl border p-4 text-sm font-mono space-y-1 ${cls}`;
+      box.innerHTML = `
+        <div class="font-bold uppercase tracking-wider text-xs mb-2">${d.verdict.replace(/_/g,' ')}</div>
+        <div class="text-slate-300 text-xs space-y-0.5">
+          <div>User ID: ${d.user_id}</div>
+          <div>BF says exists: <span class="${d.bloom_says_exists ? 'text-violet-400' : 'text-red-400'}">${d.bloom_says_exists}</span></div>
+          <div>Actually in DB: <span class="${d.actually_in_db ? 'text-emerald-400' : 'text-red-400'}">${d.actually_in_db}</span></div>
+          <div>Latency: ${d.latency_ms} ms</div>
+          <div class="mt-1 font-sans">${d.verdict_msg}</div>
+        </div>`;
+    }
+
+    // ── Cache Explorer Tab ────────────────────────────────────────────────────
+    async function lookupUser() {
+      const id = document.getElementById('lookup-id').value;
+      const res = await fetch(`/api/negative/user/${id}`);
+      const d = await res.json();
+      const box = document.getElementById('lookup-result');
+      box.classList.remove('hidden');
+      box.innerHTML = resultCard(d, `<div class="text-xs text-slate-500">Protected: ${d.protected}</div>`);
+    }
+
+    async function lookupUserBare() {
+      const id = document.getElementById('lookup-id').value;
+      const res = await fetch(`/api/negative/user/${id}/bare`);
+      const d = await res.json();
+      const box = document.getElementById('lookup-result');
+      box.classList.remove('hidden');
+      box.innerHTML = resultCard(d, `<div class="text-xs text-slate-500">No cache — always hits DB.</div>`);
+    }
+
+    async function createUser() {
+      const name  = document.getElementById('new-name').value.trim();
+      const email = document.getElementById('new-email').value.trim();
+      if (!name || !email) return;
+      const res = await fetch(`/api/negative/user?name=${encodeURIComponent(name)}&email=${encodeURIComponent(email)}`, { method: 'POST' });
+      const d = await res.json();
+      const box = document.getElementById('create-result');
+      box.classList.remove('hidden');
+      box.textContent = `Created user #${d.user?.id}. ${d.note}`;
+    }
+
+    async function deleteUser() {
+      const id = document.getElementById('del-id').value;
+      if (!id) return;
+      const res = await fetch(`/api/negative/user/${id}`, { method: 'DELETE' });
+      const d = await res.json();
+      const box = document.getElementById('delete-result');
+      box.classList.remove('hidden');
+      box.textContent = `deleted=${d.deleted}. ${d.note}`;
+    }
+
+    async function evictCache() {
+      const id = document.getElementById('evict-id').value;
+      if (!id) return;
+      const res = await fetch(`/api/negative/cache/user/${id}`, { method: 'DELETE' });
+      const d = await res.json();
+      showCacheMsg(`Evicted user ${id}: evicted=${d.evicted}. ${d.note}`);
+    }
+
+    async function flushCache() {
+      const res = await fetch('/api/negative/cache/flush', { method: 'DELETE' });
+      const d = await res.json();
+      showCacheMsg(`Flushed ${d.flushed} cache entries. ${d.note}`);
+    }
+
+    function showCacheMsg(msg) {
+      const el = document.getElementById('cache-ctrl-msg');
+      el.classList.remove('hidden');
+      el.textContent = msg;
+      setTimeout(() => el.classList.add('hidden'), 4000);
+    }
+
+    // ── Stats Tab ─────────────────────────────────────────────────────────────
+    async function loadStats() {
+      const res = await fetch('/api/negative/stats');
+      if (!res.ok) return;
+      const d = await res.json();
+      const c = d.counters;
+
+      document.getElementById('st-bloom').textContent   = c.bloom_blocks;
+      document.getElementById('st-neg').textContent     = c.neg_cache_hits;
+      document.getElementById('st-pos').textContent     = c.pos_cache_hits;
+      document.getElementById('st-db').textContent      = c.db_queries;
+      document.getElementById('st-pos-keys').textContent = d.current_cache.positive_entries;
+      document.getElementById('st-neg-keys').textContent = d.current_cache.negative_entries;
+
+      const rate = d.totals.db_save_rate_pct;
+      document.getElementById('st-save-rate').textContent = rate + '%';
+      document.getElementById('st-save-bar').style.width  = rate + '%';
+
+      const total = d.totals.total_lookups || 1;
+      const layers = [
+        { label: 'Bloom blocks',    count: c.bloom_blocks,   color: 'bg-violet-500' },
+        { label: 'Neg cache hits',  count: c.neg_cache_hits, color: 'bg-pink-500' },
+        { label: 'Pos cache hits',  count: c.pos_cache_hits, color: 'bg-emerald-500' },
+        { label: 'DB queries',      count: c.db_queries,     color: 'bg-amber-500' },
+      ];
+      document.getElementById('st-breakdown').innerHTML = layers.map(l => {
+        const pct = Math.round(l.count / total * 100);
+        return `<div class="flex items-center gap-2 text-xs">
+          <span class="text-slate-400 w-32">${l.label}</span>
+          <div class="flex-1 bg-slate-800 rounded" style="height:10px">
+            <div class="${l.color} bar-fill rounded" style="width:${pct}%"></div>
+          </div>
+          <span class="text-slate-300 font-mono w-8 text-right">${l.count}</span>
+          <span class="text-slate-600 w-10 text-right">${pct}%</span>
+        </div>`;
+      }).join('');
+    }
+
+    async function resetAll() {
+      await fetch('/api/negative/reset', { method: 'POST' });
+      await loadStats();
+      await loadBloomInfo();
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    loadStats();
+    loadBloomInfo();
+  </script>
+</body>
+</html>

@@ -11,7 +11,7 @@
 services:
 
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:latest
     container_name: caching-redis
     restart: unless-stopped
     ports:

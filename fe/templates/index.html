@@ -603,6 +603,102 @@
         </div>
       </a>
 
+      <!-- ── Card 2.13 ─────────────────────────────────────────────────────── -->
+      <a href="/strategy/213" class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-indigo-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-indigo-400 leading-none">2.13</span>
+            <span class="badge bg-indigo-950 text-indigo-300 mt-1 border border-indigo-800">L1 + L2</span>
+          </div>
+          <h3 class="text-base font-bold text-white mb-2">Two-Level Cache</h3>
+          <p class="text-slate-400 text-xs leading-relaxed mb-3">
+            Chain process-local memory (L1) and Redis (L2) to slash latency. Each layer serves as fallback and backfills the one above.
+          </p>
+          <ul class="text-slate-400 text-xs space-y-1 mb-4">
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0"></span>
+              <span><code class="text-indigo-300 font-mono text-xs">cachetools.TTLCache</code> — nanosecond L1 reads</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0"></span>
+              <span>L1 miss cascades to Redis, Redis miss goes to DB</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0"></span>
+              <span>Write-through evicts L1 to prevent staleness</span>
+            </li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-slate-800 bg-slate-900 flex items-center justify-between">
+          <div class="flex gap-4 text-xs">
+            <div class="text-center">
+              <div class="text-indigo-400 font-bold">&lt;1 ms</div>
+              <div class="text-slate-500 mt-0.5">L1</div>
+            </div>
+            <div class="text-center">
+              <div class="text-sky-400 font-bold">~1 ms</div>
+              <div class="text-slate-500 mt-0.5">L2</div>
+            </div>
+            <div class="text-center">
+              <div class="text-indigo-400 font-bold">5 s</div>
+              <div class="text-slate-500 mt-0.5">L1 TTL</div>
+            </div>
+          </div>
+          <div class="flex items-center text-indigo-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
+      <!-- ── Card 2.14 ─────────────────────────────────────────────────────── -->
+      <a href="/strategy/214" class="group block bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden card-hover cursor-pointer no-underline">
+        <div class="bg-gradient-to-br from-pink-950 to-slate-900 px-6 pt-6 pb-4">
+          <div class="flex items-start justify-between mb-3">
+            <span class="text-4xl font-black text-pink-400 leading-none">2.14</span>
+            <span class="badge bg-pink-950 text-pink-300 mt-1 border border-pink-800">Sentinel + BF</span>
+          </div>
+          <h3 class="text-base font-bold text-white mb-2">Negative Caching &amp; Bloom Filters</h3>
+          <p class="text-slate-400 text-xs leading-relaxed mb-3">
+            Cache "this doesn't exist" to stop repeated DB hits for missing IDs. Layer a Bloom filter for probabilistic pre-check — blocks 99%+ of non-existent IDs before touching Redis.
+          </p>
+          <ul class="text-slate-400 text-xs space-y-1 mb-4">
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-pink-500 flex-shrink-0"></span>
+              <span><code class="text-pink-300 font-mono text-xs">__NOT_FOUND__</code> sentinel (TTL 30 s) per missing ID</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-pink-500 flex-shrink-0"></span>
+              <span>Redis Bloom filter (<code class="text-violet-300 font-mono text-xs">BF.EXISTS</code>) — 1M IDs in ~1.2 MB</span>
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-pink-500 flex-shrink-0"></span>
+              <span>Zero false-negatives — a BF miss guarantees key is absent</span>
+            </li>
+          </ul>
+        </div>
+        <div class="px-6 py-4 border-t border-slate-800 bg-slate-900 flex items-center justify-between">
+          <div class="flex gap-4 text-xs">
+            <div class="text-center">
+              <div class="text-violet-400 font-bold">1%</div>
+              <div class="text-slate-500 mt-0.5">BF FP rate</div>
+            </div>
+            <div class="text-center">
+              <div class="text-pink-400 font-bold">30 s</div>
+              <div class="text-slate-500 mt-0.5">neg TTL</div>
+            </div>
+            <div class="text-center">
+              <div class="text-pink-400 font-bold">~1.2 MB</div>
+              <div class="text-slate-500 mt-0.5">1M IDs</div>
+            </div>
+          </div>
+          <div class="flex items-center text-pink-400 text-sm font-semibold group-hover:gap-2 gap-1 transition-all pt-1">
+            <span>Open demo</span>
+            <span class="transition-transform group-hover:translate-x-1">→</span>
+          </div>
+        </div>
+      </a>
+
     </section>
 
     <!-- ── How it works ─────────────────────────────────────────────────────── -->

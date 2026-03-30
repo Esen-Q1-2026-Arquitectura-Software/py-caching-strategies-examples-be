@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2.13 — Two-Level Cache (L1 + L2)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn { transition: all .15s ease; }
+    .tab-btn.active { background: rgb(15 23 42); color: rgb(129 140 248); border-color: rgb(99 102 241); }
+    .tab-btn:not(.active) { color: #94a3b8; border-color: transparent; }
+    .tab-btn:not(.active):hover { color: #e2e8f0; background: rgb(30 41 59); }
+    .fade-in { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .hit-l1  { background:#0f172a; border-color:#6366f1; color:#a5b4fc; }
+    .hit-l2  { background:#0c1a2e; border-color:#0ea5e9; color:#7dd3fc; }
+    .hit-db  { background:#1c0a2e; border-color:#a855f7; color:#d8b4fe; }
+    .miss    { background:#450a0a; border-color:#dc2626; color:#f87171; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    table td, table th { padding: .45rem .75rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .72rem; }
+    .layer-box {
+      border-radius: 0.75rem;
+      padding: 0.75rem 1rem;
+      border: 1px solid;
+      transition: box-shadow .3s ease;
+    }
+    .layer-box.active-layer { box-shadow: 0 0 16px 2px; }
+    .bar-fill { height: 10px; border-radius: 3px; transition: width .5s ease; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-950 sticky top-0 z-10 px-6 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-slate-500 hover:text-slate-300 text-sm transition-colors">← Back</a>
+        <span class="text-slate-700">|</span>
+        <span class="text-indigo-400 font-bold text-sm font-mono">2.13</span>
+        <span class="text-slate-300 font-semibold text-sm">Two-Level Cache (L1 + L2)</span>
+      </div>
+      <span class="text-xs px-2.5 py-1 rounded-full bg-indigo-950 text-indigo-300 font-semibold border border-indigo-800">TTLCache + Redis</span>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-8 space-y-6">
+
+    <!-- Intro -->
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <h1 class="text-xl font-bold text-white">Two-Level Cache (L1 + L2)</h1>
+      <p class="text-slate-400 text-sm leading-relaxed">
+        L1 is a <span class="text-indigo-300 font-semibold">process-local TTLCache</span> (cachetools) — pure dict lookup, no network,
+        nanosecond latency. L2 is <span class="text-sky-300 font-semibold">Redis</span> — shared across all instances, ~1 ms.
+        L3 is the <span class="text-purple-300 font-semibold">database</span> — simulated 100 ms. Each level backfills the one above it.
+      </p>
+
+      <!-- Layer diagram -->
+      <div class="flex flex-col md:flex-row items-stretch gap-3 text-sm">
+        <div class="layer-box flex-1 border-indigo-700 bg-indigo-950/40">
+          <div class="text-indigo-400 font-bold text-xs uppercase tracking-wider mb-1">L1 — Process Memory</div>
+          <div class="text-slate-300 font-mono text-xs">TTLCache(max=200, ttl=5s)</div>
+          <div class="text-slate-500 text-xs mt-1">~0 ms &nbsp;·&nbsp; per-instance &nbsp;·&nbsp; lost on restart</div>
+        </div>
+        <div class="flex items-center justify-center text-slate-600 font-bold text-lg px-1">→</div>
+        <div class="layer-box flex-1 border-sky-700 bg-sky-950/40">
+          <div class="text-sky-400 font-bold text-xs uppercase tracking-wider mb-1">L2 — Redis</div>
+          <div class="text-slate-300 font-mono text-xs">SETEX key 60 value</div>
+          <div class="text-slate-500 text-xs mt-1">~1 ms &nbsp;·&nbsp; shared &nbsp;·&nbsp; survives restarts</div>
+        </div>
+        <div class="flex items-center justify-center text-slate-600 font-bold text-lg px-1">→</div>
+        <div class="layer-box flex-1 border-purple-700 bg-purple-950/40">
+          <div class="text-purple-400 font-bold text-xs uppercase tracking-wider mb-1">L3 — Database</div>
+          <div class="text-slate-300 font-mono text-xs">await db.fetch(key)</div>
+          <div class="text-slate-500 text-xs mt-1">~100 ms &nbsp;·&nbsp; source of truth</div>
+        </div>
+      </div>
+
+      <!-- Code pattern -->
+      <div class="bg-slate-800 rounded-xl p-4">
+        <div class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wider">Core pattern</div>
+        <pre class="text-indigo-300 text-xs leading-relaxed">if key in _l1:                        # L1 check — ns latency
+    return _l1[key]                   # HIT — no I/O
+
+raw = await redis.get(l2_key)         # L2 check — ~1 ms
+if raw:
+    result = json.loads(raw)
+    _l1[key] = result                 # backfill L1
+    return result
+
+result = await db.fetch(key)          # L3 — ~100 ms
+await redis.setex(l2_key, 60, ...)    # populate L2
+_l1[key] = result                     # populate L1
+return result</pre>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 border-b border-slate-800 pb-px flex-wrap">
+      <button onclick="showTab('demo')"    id="tab-demo"    class="tab-btn active px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Live Demo</button>
+      <button onclick="showTab('layers')"  id="tab-layers"  class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Layer Inspector</button>
+      <button onclick="showTab('write')"   id="tab-write"   class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Write-Through</button>
+      <button onclick="showTab('stats')"   id="tab-stats"   class="tab-btn px-4 py-2 rounded-t-lg text-sm font-semibold border-b-2">Stats</button>
+    </div>
+
+    <!-- ── TAB: Live Demo ──────────────────────────────────────────────────────── -->
+    <div id="pane-demo" class="space-y-5 fade-in">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Fetch Key — L1 → L2 → DB</h2>
+        <p class="text-slate-400 text-sm">
+          Select a config key. <strong class="text-white">First call</strong> → DB (~100 ms).
+          <strong class="text-white">Second call</strong> → L2 Redis (~1 ms).
+          <strong class="text-white">Third call within 5 s</strong> → L1 memory (&lt;1 ms). Watch the latency drop!
+        </p>
+
+        <!-- Key selector -->
+        <div class="flex flex-wrap gap-3 items-center">
+          <select id="key-select"
+            class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 flex-1 min-w-40">
+            <option value="site.name">site.name</option>
+            <option value="site.theme">site.theme</option>
+            <option value="feature.redis">feature.redis</option>
+            <option value="feature.l2cache">feature.l2cache</option>
+            <option value="limits.rps">limits.rps</option>
+            <option value="limits.burst">limits.burst</option>
+            <option value="ttl.l1">ttl.l1</option>
+            <option value="ttl.l2">ttl.l2</option>
+          </select>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="fetchKey('full')"   class="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg text-sm font-semibold transition-colors">
+              Fetch (L1→L2→DB)
+            </button>
+            <button onclick="fetchKey('l2only')" class="px-4 py-2 bg-sky-800 hover:bg-sky-700 text-white rounded-lg text-sm font-semibold transition-colors">
+              L2 Only
+            </button>
+            <button onclick="fetchKey('dbonly')" class="px-4 py-2 bg-purple-900 hover:bg-purple-800 text-purple-300 rounded-lg text-sm font-semibold transition-colors">
+              DB Only
+            </button>
+          </div>
+        </div>
+
+        <!-- Result card -->
+        <div id="fetch-result" class="hidden space-y-3">
+          <!-- Source badge + latency bar-->
+          <div class="flex items-center gap-3 flex-wrap">
+            <div id="fetch-badge" class="px-4 py-1.5 rounded-full text-sm font-bold border"></div>
+            <div class="flex items-center gap-2 text-sm">
+              <span class="text-slate-500">Latency:</span>
+              <span id="fetch-latency" class="text-white font-bold font-mono">—</span>
+            </div>
+          </div>
+
+          <!-- Layer path visualization -->
+          <div id="layer-path" class="flex items-center gap-2 text-xs flex-wrap">
+            <div id="path-l1" class="px-3 py-1.5 rounded-lg border opacity-30 border-indigo-700 bg-indigo-950 text-indigo-400 font-semibold">L1 check</div>
+            <span class="text-slate-600">→</span>
+            <div id="path-l2" class="px-3 py-1.5 rounded-lg border opacity-30 border-sky-700 bg-sky-950 text-sky-400 font-semibold">L2 check</div>
+            <span class="text-slate-600">→</span>
+            <div id="path-db" class="px-3 py-1.5 rounded-lg border opacity-30 border-purple-700 bg-purple-950 text-purple-400 font-semibold">DB fetch</div>
+          </div>
+
+          <!-- TTL info -->
+          <div class="grid grid-cols-3 gap-3 text-sm">
+            <div class="bg-slate-800 rounded-lg p-3 text-center">
+              <div id="fetch-source" class="text-white font-bold font-mono">—</div>
+              <div class="text-slate-500 text-xs mt-1">Source</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3 text-center">
+              <div id="fetch-l1ttl" class="text-indigo-400 font-bold">—</div>
+              <div class="text-slate-500 text-xs mt-1">L1 TTL (s)</div>
+            </div>
+            <div class="bg-slate-800 rounded-lg p-3 text-center">
+              <div id="fetch-l2ttl" class="text-sky-400 font-bold">—</div>
+              <div class="text-slate-500 text-xs mt-1">L2 TTL (s)</div>
+            </div>
+          </div>
+
+          <div id="fetch-data" class="bg-slate-800 rounded-xl p-3 text-xs font-mono text-slate-300"></div>
+        </div>
+
+        <!-- Flush controls -->
+        <div class="border-t border-slate-800 pt-3 flex flex-wrap gap-2">
+          <span class="text-slate-500 text-xs self-center">Evict / flush:</span>
+          <button onclick="evictL1()" class="px-3 py-1.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-400 border border-indigo-800 rounded-lg text-xs font-semibold transition-colors">
+            Evict selected from L1
+          </button>
+          <button onclick="flushL1()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-colors">
+            Flush L1
+          </button>
+          <button onclick="flushL2()" class="px-3 py-1.5 bg-sky-950 hover:bg-sky-900 text-sky-400 border border-sky-800 rounded-lg text-xs font-semibold transition-colors">
+            Flush L2 (Redis)
+          </button>
+          <button onclick="flushAll()" class="px-3 py-1.5 bg-red-950 hover:bg-red-900 text-red-400 border border-red-800 rounded-lg text-xs font-semibold transition-colors">
+            Flush Both
+          </button>
+        </div>
+        <div id="flush-msg" class="hidden text-xs font-mono text-slate-400 bg-slate-800 rounded-lg px-3 py-2"></div>
+      </div>
+
+      <!-- Latency comparison -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Latency Comparison</h2>
+        <p class="text-slate-400 text-sm">Fetch the same key from each layer to observe real latency differences.</p>
+        <div class="flex gap-2 flex-wrap">
+          <button onclick="compareAll()" class="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg text-sm font-semibold transition-colors">
+            Run Comparison (DB → L2 → L1)
+          </button>
+        </div>
+        <div id="compare-results" class="hidden space-y-3">
+          <div class="grid grid-cols-3 gap-3 text-sm">
+            <div class="bg-slate-800 border border-purple-800 rounded-xl p-4 text-center">
+              <div class="text-purple-400 font-bold text-xs uppercase tracking-wider mb-2">DB Only</div>
+              <div id="cmp-db" class="text-white font-bold text-2xl">—</div>
+              <div class="text-slate-500 text-xs mt-1">ms</div>
+            </div>
+            <div class="bg-slate-800 border border-sky-800 rounded-xl p-4 text-center">
+              <div class="text-sky-400 font-bold text-xs uppercase tracking-wider mb-2">L2 Redis</div>
+              <div id="cmp-l2" class="text-white font-bold text-2xl">—</div>
+              <div class="text-slate-500 text-xs mt-1">ms</div>
+            </div>
+            <div class="bg-slate-800 border border-indigo-800 rounded-xl p-4 text-center">
+              <div class="text-indigo-400 font-bold text-xs uppercase tracking-wider mb-2">L1 Memory</div>
+              <div id="cmp-l1" class="text-white font-bold text-2xl">—</div>
+              <div class="text-slate-500 text-xs mt-1">ms</div>
+            </div>
+          </div>
+          <div id="cmp-bars" class="space-y-2"></div>
+          <div id="cmp-speedup" class="text-xs text-slate-400 bg-slate-800 rounded-lg px-3 py-2 font-mono"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Layer Inspector ────────────────────────────────────────────────── -->
+    <div id="pane-layers" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <h2 class="text-base font-bold text-slate-200">L1 Cache Contents</h2>
+          <button onclick="loadInspect()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-semibold transition-colors">
+            Refresh
+          </button>
+        </div>
+        <p class="text-slate-400 text-sm">
+          Shows all keys currently resident in the process-local L1 TTLCache, plus the corresponding L2 (Redis) TTL.
+          <span class="text-indigo-400">L1 lifetime = 5 s from last read.</span>
+          Watch entries disappear after 5 s of inactivity.
+        </p>
+
+        <!-- L1 occupancy bar -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-500">L1 occupancy</span>
+            <span id="l1-occ-label" class="text-indigo-400 font-mono">0 / 200</span>
+          </div>
+          <div class="w-full bg-slate-800 rounded" style="height:10px">
+            <div id="l1-occ-bar" class="indigo-400 bg-indigo-500 bar-fill rounded" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- L1 items table -->
+        <div id="l1-items" class="overflow-x-auto">
+          <div class="text-slate-600 text-sm italic">No L1 entries yet. Fetch a key first.</div>
+        </div>
+
+        <!-- L2 TTL summary -->
+        <div id="l2-summary" class="hidden">
+          <div class="text-indigo-400 font-bold text-xs uppercase tracking-wider mb-2">L2 (Redis) TTLs for same keys</div>
+          <div id="l2-ttl-bars" class="space-y-1.5"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Write-Through ──────────────────────────────────────────────────── -->
+    <div id="pane-write" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <h2 class="text-base font-bold text-slate-200">Write-Through Demo</h2>
+        <p class="text-slate-400 text-sm">
+          A write must update <em>both</em> L1 and L2 to prevent stale reads. Here we:
+          <ol class="list-decimal list-inside text-slate-400 text-sm mt-1 space-y-0.5">
+            <li>Persist the new value to the simulated DB</li>
+            <li>Write to L2 (Redis) with fresh TTL</li>
+            <li>Evict the L1 entry — next read will backfill from L2</li>
+          </ol>
+          This avoids a window where L1 holds a stale value while L2 is already updated.
+        </p>
+
+        <div class="space-y-3">
+          <div class="flex gap-3 items-center flex-wrap">
+            <label class="text-slate-400 text-sm w-24">Key:</label>
+            <select id="write-key"
+              class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 flex-1 min-w-40">
+              <option value="site.name">site.name</option>
+              <option value="site.theme">site.theme</option>
+              <option value="limits.rps">limits.rps</option>
+              <option value="limits.burst">limits.burst</option>
+            </select>
+          </div>
+          <div class="flex gap-3 items-center flex-wrap">
+            <label class="text-slate-400 text-sm w-24">New value:</label>
+            <input id="write-value" type="text" placeholder="e.g. light / 2000 / ..."
+              class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white flex-1 focus:outline-none focus:border-indigo-500" />
+          </div>
+          <button onclick="writeKey()" class="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white rounded-lg text-sm font-semibold transition-colors">
+            Write-Through
+          </button>
+        </div>
+
+        <div id="write-result" class="hidden bg-slate-800 rounded-xl p-4 text-xs font-mono text-slate-300 space-y-1"></div>
+
+        <!-- Staleness explainer -->
+        <div class="bg-slate-800 rounded-xl p-4 space-y-2">
+          <div class="text-indigo-400 font-bold text-xs uppercase tracking-wider">Why evict L1 on write?</div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-400">
+            <div class="space-y-1">
+              <div class="text-red-400 font-semibold">Without eviction (WRONG)</div>
+              <pre class="text-slate-500 leading-relaxed">write DB ✓
+write L2 (Redis) ✓
+L1 still: old value ← stale!
+
+Next read (within 5 s):
+  L1 hit → returns OLD value
+  User sees stale data for up to 5 s</pre>
+            </div>
+            <div class="space-y-1">
+              <div class="text-emerald-400 font-semibold">With eviction (CORRECT)</div>
+              <pre class="text-slate-500 leading-relaxed">write DB ✓
+write L2 (Redis) ✓
+del _l1[key]     ← evict stale L1
+
+Next read:
+  L1 miss → L2 hit → new value
+  Backfill L1 with NEW value ✓</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Stats ──────────────────────────────────────────────────────────── -->
+    <div id="pane-stats" class="space-y-5 fade-in hidden">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <h2 class="text-base font-bold text-slate-200">Session Statistics</h2>
+          <div class="flex gap-2">
+            <button onclick="loadStats()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-semibold">Refresh</button>
+            <button onclick="resetAll()" class="px-3 py-1.5 bg-red-950 hover:bg-red-900 text-red-400 border border-red-800 rounded-lg text-xs font-semibold">Reset All</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <!-- L1 -->
+          <div class="bg-indigo-950/50 border border-indigo-800 rounded-xl p-4 space-y-3">
+            <div class="text-indigo-400 font-bold text-xs uppercase tracking-wider">L1 — Process Memory</div>
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-slate-800">
+                <tr><td class="py-1.5 text-slate-400">Hits</td><td id="st-l1-hits" class="py-1.5 text-right text-emerald-400 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Misses</td><td id="st-l1-misses" class="py-1.5 text-right text-red-400 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Hit rate</td><td id="st-l1-rate" class="py-1.5 text-right text-indigo-300 font-mono">0%</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Size</td><td id="st-l1-size" class="py-1.5 text-right text-slate-300 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">TTL</td><td class="py-1.5 text-right text-slate-400 font-mono">5 s</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- L2 -->
+          <div class="bg-sky-950/50 border border-sky-800 rounded-xl p-4 space-y-3">
+            <div class="text-sky-400 font-bold text-xs uppercase tracking-wider">L2 — Redis</div>
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-slate-800">
+                <tr><td class="py-1.5 text-slate-400">Hits</td><td id="st-l2-hits" class="py-1.5 text-right text-emerald-400 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Misses</td><td id="st-l2-misses" class="py-1.5 text-right text-red-400 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Hit rate</td><td id="st-l2-rate" class="py-1.5 text-right text-sky-300 font-mono">0%</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Keys</td><td id="st-l2-keys" class="py-1.5 text-right text-slate-300 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">TTL</td><td class="py-1.5 text-right text-slate-400 font-mono">60 s</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- DB + misc -->
+          <div class="bg-purple-950/50 border border-purple-800 rounded-xl p-4 space-y-3">
+            <div class="text-purple-400 font-bold text-xs uppercase tracking-wider">L3 — Database</div>
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-slate-800">
+                <tr><td class="py-1.5 text-slate-400">DB calls</td><td id="st-db-calls" class="py-1.5 text-right text-purple-300 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Writes</td><td id="st-writes" class="py-1.5 text-right text-amber-300 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">L1 evictions</td><td id="st-l1-evict" class="py-1.5 text-right text-slate-300 font-mono">0</td></tr>
+                <tr><td class="py-1.5 text-slate-400">Simulated latency</td><td class="py-1.5 text-right text-slate-400 font-mono">100 ms</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Available keys -->
+        <div>
+          <div class="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">Available config keys</div>
+          <div id="avail-keys" class="flex flex-wrap gap-2"></div>
+        </div>
+
+        <!-- Insight -->
+        <div class="bg-slate-800 rounded-xl p-4">
+          <div class="text-indigo-400 font-bold text-xs uppercase tracking-wider mb-2">1% Knowledge</div>
+          <p class="text-slate-400 text-xs leading-relaxed">
+            L1 is <strong class="text-white">process-local</strong> — in a multi-instance deployment (Kubernetes, multiple workers)
+            each pod has its own independent L1. Stale window = L1 TTL (5 s). This is acceptable for most config/reference data.
+            For financial prices or inventory counts, set L1 TTL to 0 or skip L1 entirely.
+            L2 (Redis) is the shared source of truth — invalidate it to propagate changes to all instances within one L2 TTL cycle.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // ── Tab switching ─────────────────────────────────────────────────────────
+    const panes = ['demo', 'layers', 'write', 'stats'];
+    function showTab(name) {
+      panes.forEach(p => {
+        document.getElementById('pane-' + p).classList.toggle('hidden', p !== name);
+        document.getElementById('tab-' + p).classList.toggle('active', p === name);
+      });
+      if (name === 'layers') loadInspect();
+      if (name === 'stats')  loadStats();
+    }
+
+    // ── Layer path visualization ──────────────────────────────────────────────
+    function setLayerPath(source) {
+      const map = {
+        'L1': ['l1'],
+        'L2': ['l1', 'l2'],
+        'L2_only': ['l2'],
+        'DB': ['l1', 'l2', 'db'],
+        'DB_via_l2only': ['l2', 'db'],
+        'DB_only': ['db'],
+      };
+      const active = map[source] || [];
+      ['l1', 'l2', 'db'].forEach(id => {
+        const el = document.getElementById('path-' + id);
+        const hit = active[active.length - 1] === id;   // last = where data came from
+        const traversed = active.includes(id);
+        el.classList.toggle('opacity-30', !traversed);
+        el.classList.toggle('opacity-100', traversed);
+        if (hit) {
+          el.classList.add('ring-2', 'ring-white/20');
+        } else {
+          el.classList.remove('ring-2', 'ring-white/20');
+        }
+      });
+    }
+
+    function sourceBadgeClass(source) {
+      if (source === 'L1') return 'hit-l1';
+      if (source === 'L2' || source === 'L2_only') return 'hit-l2';
+      if (source && source.startsWith('DB')) return 'hit-db';
+      return 'miss';
+    }
+
+    function sourceLabel(source) {
+      return {
+        'L1': '● L1 HIT (memory)',
+        'L2': '● L2 HIT (Redis)',
+        'L2_only': '● L2 HIT (Redis)',
+        'DB': '○ DB FETCH (all missed)',
+        'DB_via_l2only': '○ DB FETCH (L2 bypassed)',
+        'DB_only': '○ DB FETCH (both bypassed)',
+      }[source] || source;
+    }
+
+    // ── Live Demo Tab ─────────────────────────────────────────────────────────
+    async function fetchKey(mode) {
+      const key = document.getElementById('key-select').value;
+      const urls = {
+        full:   `/api/two-level/config/${key}`,
+        l2only: `/api/two-level/config/${key}/l2-only`,
+        dbonly: `/api/two-level/config/${key}/db-only`,
+      };
+      const res = await fetch(urls[mode]);
+      const d = await res.json();
+      if (d.error) {
+        showFlushMsg(d.error, true);
+        return;
+      }
+
+      document.getElementById('fetch-result').classList.remove('hidden');
+
+      const badge = document.getElementById('fetch-badge');
+      badge.className = `px-4 py-1.5 rounded-full text-sm font-bold border ${sourceBadgeClass(d.source)}`;
+      badge.textContent = sourceLabel(d.source);
+
+      document.getElementById('fetch-latency').textContent = d.latency_ms + ' ms';
+      document.getElementById('fetch-source').textContent = d.source;
+      document.getElementById('fetch-l1ttl').textContent =
+        d.l1_ttl_remaining !== undefined && d.l1_ttl_remaining !== null ? d.l1_ttl_remaining + 's' : '—';
+      document.getElementById('fetch-l2ttl').textContent =
+        d.l2_ttl_remaining !== undefined && d.l2_ttl_remaining !== null ? d.l2_ttl_remaining + 's' : '—';
+
+      setLayerPath(d.source);
+
+      const copy = { ...d };
+      ['source', 'latency_ms', 'l1_ttl_remaining', 'l2_ttl_remaining'].forEach(k => delete copy[k]);
+      document.getElementById('fetch-data').textContent = JSON.stringify(copy, null, 2);
+    }
+
+    function showFlushMsg(msg, isErr = false) {
+      const el = document.getElementById('flush-msg');
+      el.classList.remove('hidden');
+      el.className = `text-xs font-mono rounded-lg px-3 py-2 ${isErr ? 'text-red-400 bg-red-950 border border-red-800' : 'text-emerald-400 bg-emerald-950 border border-emerald-800'}`;
+      el.textContent = msg;
+      setTimeout(() => el.classList.add('hidden'), 4000);
+    }
+
+    async function evictL1() {
+      const key = document.getElementById('key-select').value;
+      const res = await fetch(`/api/two-level/l1/evict/${key}`, { method: 'DELETE' });
+      const d = await res.json();
+      showFlushMsg(`L1 evict '${key}': evicted=${d.evicted}. ${d.note}`);
+    }
+
+    async function flushL1() {
+      const res = await fetch('/api/two-level/l1/flush', { method: 'DELETE' });
+      const d = await res.json();
+      showFlushMsg(`L1 flushed: ${d.flushed_l1_entries} entries removed. ${d.note}`);
+    }
+
+    async function flushL2() {
+      const res = await fetch('/api/two-level/l2/flush', { method: 'DELETE' });
+      const d = await res.json();
+      showFlushMsg(`L2 flushed: ${d.flushed_l2_keys} Redis keys removed. ${d.note}`);
+    }
+
+    async function flushAll() {
+      const res = await fetch('/api/two-level/flush', { method: 'DELETE' });
+      const d = await res.json();
+      showFlushMsg(`Both flushed: L1=${d.flushed_l1}, L2=${d.flushed_l2}. ${d.note}`);
+    }
+
+    // ── Latency comparison ────────────────────────────────────────────────────
+    async function compareAll() {
+      const key = document.getElementById('key-select').value;
+      // 1. Warm L2 first by doing a full fetch (go to DB if needed)
+      await fetch(`/api/two-level/config/${key}`);
+      // 2. DB-only (always slow)
+      const dbRes  = await fetch(`/api/two-level/config/${key}/db-only`);
+      const dbD    = await dbRes.json();
+      // 3. L2-only (Redis)
+      const l2Res  = await fetch(`/api/two-level/config/${key}/l2-only`);
+      const l2D    = await l2Res.json();
+      // 4. Full (should hit L1 since we already fetched it above)
+      const l1Res  = await fetch(`/api/two-level/config/${key}`);
+      const l1D    = await l1Res.json();
+
+      const dbMs = dbD.latency_ms;
+      const l2Ms = l2D.latency_ms;
+      const l1Ms = l1D.latency_ms;
+      const maxMs = Math.max(dbMs, l2Ms, l1Ms, 1);
+
+      document.getElementById('compare-results').classList.remove('hidden');
+      document.getElementById('cmp-db').textContent = dbMs;
+      document.getElementById('cmp-l2').textContent = l2Ms;
+      document.getElementById('cmp-l1').textContent = l1Ms;
+
+      const bars = document.getElementById('cmp-bars');
+      bars.innerHTML = [
+        { label: 'DB (~100 ms)', ms: dbMs, color: 'bg-purple-500' },
+        { label: 'L2 Redis (~1 ms)', ms: l2Ms, color: 'bg-sky-500' },
+        { label: 'L1 Memory (<1 ms)', ms: l1Ms, color: 'bg-indigo-500' },
+      ].map(b => {
+        const pct = Math.round((b.ms / maxMs) * 100);
+        return `<div class="flex items-center gap-2 text-xs">
+          <span class="text-slate-400 w-36">${b.label}</span>
+          <div class="flex-1 bg-slate-800 rounded" style="height:10px">
+            <div class="${b.color} bar-fill rounded" style="width:${pct}%"></div>
+          </div>
+          <span class="text-slate-300 font-mono w-16 text-right">${b.ms} ms</span>
+        </div>`;
+      }).join('');
+
+      const l1SpeedVsDb = dbMs > 0 && l1Ms > 0 ? Math.round(dbMs / l1Ms) : '?';
+      const l2SpeedVsDb = dbMs > 0 && l2Ms > 0 ? Math.round(dbMs / l2Ms) : '?';
+      document.getElementById('cmp-speedup').textContent =
+        `L1 is ~${l1SpeedVsDb}x faster than DB.  L2 is ~${l2SpeedVsDb}x faster than DB.`;
+    }
+
+    // ── Layer Inspector Tab ───────────────────────────────────────────────────
+    async function loadInspect() {
+      const res = await fetch('/api/two-level/l1/inspect');
+      if (!res.ok) return;
+      const d = await res.json();
+
+      const occ = d.l1_size / d.l1_maxsize * 100;
+      document.getElementById('l1-occ-label').textContent = `${d.l1_size} / ${d.l1_maxsize}`;
+      document.getElementById('l1-occ-bar').style.width = occ + '%';
+
+      const container = document.getElementById('l1-items');
+      if (d.items.length === 0) {
+        container.innerHTML = '<div class="text-slate-600 text-sm italic">L1 is empty. Fetch a key to populate it.</div>';
+        document.getElementById('l2-summary').classList.add('hidden');
+        return;
+      }
+
+      container.innerHTML = `
+        <table class="w-full text-sm border-collapse">
+          <thead class="bg-slate-800 text-slate-400 text-xs uppercase">
+            <tr>
+              <th class="text-left p-2 rounded-tl">Key</th>
+              <th class="text-left p-2">Value</th>
+              <th class="text-right p-2">L1 TTL</th>
+              <th class="text-right p-2 rounded-tr">L2 TTL (Redis)</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            ${d.items.map(item => `
+              <tr>
+                <td class="p-2 font-mono text-indigo-300 text-xs">${item.key}</td>
+                <td class="p-2 text-slate-300 text-xs font-mono">${JSON.stringify(item.value?.value ?? item.value)}</td>
+                <td class="p-2 text-right text-indigo-400 font-mono">~${d.l1_ttl_s}s</td>
+                <td class="p-2 text-right text-sky-400 font-mono">${item.l2_ttl >= 0 ? item.l2_ttl + 's' : 'expired'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`;
+
+      // L2 TTL bars
+      const maxTTL = d.l2_ttl_s + 2;
+      document.getElementById('l2-summary').classList.remove('hidden');
+      document.getElementById('l2-ttl-bars').innerHTML = d.items.map(item => {
+        const pct = item.l2_ttl < 0 ? 0 : Math.round((item.l2_ttl / maxTTL) * 100);
+        return `<div class="flex items-center gap-2 text-xs">
+          <span class="text-slate-500 font-mono w-32 truncate">${item.key}</span>
+          <div class="flex-1 bg-slate-800 rounded" style="height:10px">
+            <div class="bg-sky-500 bar-fill rounded" style="width:${pct}%"></div>
+          </div>
+          <span class="text-sky-400 font-mono w-12 text-right">${item.l2_ttl >= 0 ? item.l2_ttl + 's' : 'gone'}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // ── Write-Through Tab ─────────────────────────────────────────────────────
+    async function writeKey() {
+      const key   = document.getElementById('write-key').value;
+      const value = document.getElementById('write-value').value.trim();
+      if (!value) return;
+
+      const payload = { value };
+      const res = await fetch(`/api/two-level/config/${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await res.json();
+
+      const el = document.getElementById('write-result');
+      el.classList.remove('hidden');
+      el.innerHTML = `<span class="text-emerald-400">Written: ${d.written}</span><br>
+        Value: <span class="text-white">${JSON.stringify(d.value)}</span><br>
+        L1 evicted: <span class="${d.l1_evicted ? 'text-amber-400' : 'text-slate-500'}">${d.l1_evicted}</span><br>
+        ${d.note}`;
+    }
+
+    // ── Stats Tab ─────────────────────────────────────────────────────────────
+    async function loadStats() {
+      const res = await fetch('/api/two-level/stats');
+      if (!res.ok) return;
+      const d = await res.json();
+
+      document.getElementById('st-l1-hits').textContent    = d.l1.hits;
+      document.getElementById('st-l1-misses').textContent  = d.l1.misses;
+      document.getElementById('st-l1-rate').textContent    = d.l1.hit_rate_pct + '%';
+      document.getElementById('st-l1-size').textContent    = d.l1.current_size;
+      document.getElementById('st-l2-hits').textContent    = d.l2.hits;
+      document.getElementById('st-l2-misses').textContent  = d.l2.misses;
+      document.getElementById('st-l2-rate').textContent    = d.l2.hit_rate_pct + '%';
+      document.getElementById('st-l2-keys').textContent    = d.l2.current_keys;
+      document.getElementById('st-db-calls').textContent   = d.db.calls;
+      document.getElementById('st-writes').textContent     = d.writes;
+      document.getElementById('st-l1-evict').textContent   = d.l1_evictions;
+
+      const avail = document.getElementById('avail-keys');
+      avail.innerHTML = d.available_keys.map(k =>
+        `<button onclick="document.getElementById('key-select').value='${k}'; showTab('demo')"
+           class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-mono border border-slate-700 transition-colors">${k}</button>`
+      ).join('');
+    }
+
+    async function resetAll() {
+      await fetch('/api/two-level/reset', { method: 'POST' });
+      await loadStats();
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    loadStats();
+  </script>
+</body>
+</html>

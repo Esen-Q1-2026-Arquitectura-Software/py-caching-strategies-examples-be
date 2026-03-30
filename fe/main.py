@@ -163,6 +163,16 @@ def strategy_212():
     return render_template("strategy_212.html")
 
 
+@app.get("/strategy/213")
+def strategy_213():
+    return render_template("strategy_213.html")
+
+
+@app.get("/strategy/214")
+def strategy_214():
+    return render_template("strategy_214.html")
+
+
 # ── lru_cache proxy ───────────────────────────────────────────────────────────
 
 
@@ -555,6 +565,126 @@ def herd_clear_cache():
 @app.route("/api/herd/reset", methods=["POST"])
 def herd_reset():
     return _proxy("POST", "/v1/herd/reset")
+
+
+# -- Two-Level Cache (2.13) proxy -------------------------------------------
+
+
+@app.get("/api/two-level/config/<path:key>")
+def two_level_get(key: str):
+    return _proxy("GET", f"/v1/two-level/config/{key}")
+
+
+@app.get("/api/two-level/config/<path:key>/l2-only")
+def two_level_get_l2(key: str):
+    return _proxy("GET", f"/v1/two-level/config/{key}/l2-only")
+
+
+@app.get("/api/two-level/config/<path:key>/db-only")
+def two_level_get_db(key: str):
+    return _proxy("GET", f"/v1/two-level/config/{key}/db-only")
+
+
+@app.route("/api/two-level/config/<path:key>", methods=["POST"])
+def two_level_put(key: str):
+    return _proxy("POST", f"/v1/two-level/config/{key}")
+
+
+@app.get("/api/two-level/l1/inspect")
+def two_level_inspect_l1():
+    return _proxy("GET", "/v1/two-level/l1/inspect")
+
+
+@app.route("/api/two-level/l1/evict/<path:key>", methods=["DELETE"])
+def two_level_evict_l1(key: str):
+    return _proxy("DELETE", f"/v1/two-level/l1/evict/{key}")
+
+
+@app.route("/api/two-level/l1/flush", methods=["DELETE"])
+def two_level_flush_l1():
+    return _proxy("DELETE", "/v1/two-level/l1/flush")
+
+
+@app.route("/api/two-level/l2/flush", methods=["DELETE"])
+def two_level_flush_l2():
+    return _proxy("DELETE", "/v1/two-level/l2/flush")
+
+
+@app.route("/api/two-level/flush", methods=["DELETE"])
+def two_level_flush_all():
+    return _proxy("DELETE", "/v1/two-level/flush")
+
+
+@app.get("/api/two-level/stats")
+def two_level_stats():
+    return _proxy("GET", "/v1/two-level/stats")
+
+
+@app.route("/api/two-level/reset", methods=["POST"])
+def two_level_reset():
+    return _proxy("POST", "/v1/two-level/reset")
+
+
+# ── Negative Caching & Bloom Filters (2.14) proxy ────────────────────────────
+
+
+@app.get("/api/negative/user/<int:user_id>")
+def negative_get_user(user_id: int):
+    return _proxy("GET", f"/v1/negative/user/{user_id}")
+
+
+@app.get("/api/negative/user/<int:user_id>/bare")
+def negative_get_user_bare(user_id: int):
+    return _proxy("GET", f"/v1/negative/user/{user_id}/bare")
+
+
+@app.route("/api/negative/user", methods=["POST"])
+def negative_create_user():
+    from flask import request as freq
+
+    qs = freq.query_string.decode()
+    suffix = f"?{qs}" if qs else ""
+    return _proxy("POST", f"/v1/negative/user{suffix}")
+
+
+@app.route("/api/negative/user/<int:user_id>", methods=["DELETE"])
+def negative_delete_user(user_id: int):
+    return _proxy("DELETE", f"/v1/negative/user/{user_id}")
+
+
+@app.get("/api/negative/bloom/check/<int:user_id>")
+def negative_bloom_check(user_id: int):
+    return _proxy("GET", f"/v1/negative/bloom/check/{user_id}")
+
+
+@app.get("/api/negative/bloom/info")
+def negative_bloom_info():
+    return _proxy("GET", "/v1/negative/bloom/info")
+
+
+@app.route("/api/negative/bloom/init", methods=["POST"])
+def negative_bloom_init():
+    return _proxy("POST", "/v1/negative/bloom/init")
+
+
+@app.route("/api/negative/cache/user/<int:user_id>", methods=["DELETE"])
+def negative_evict_cache(user_id: int):
+    return _proxy("DELETE", f"/v1/negative/cache/user/{user_id}")
+
+
+@app.route("/api/negative/cache/flush", methods=["DELETE"])
+def negative_flush_cache():
+    return _proxy("DELETE", "/v1/negative/cache/flush")
+
+
+@app.get("/api/negative/stats")
+def negative_stats():
+    return _proxy("GET", "/v1/negative/stats")
+
+
+@app.route("/api/negative/reset", methods=["POST"])
+def negative_reset():
+    return _proxy("POST", "/v1/negative/reset")
 
 
 if __name__ == "__main__":
